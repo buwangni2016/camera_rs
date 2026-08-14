@@ -1,15 +1,23 @@
-/*!
- * 共享状态定义
- *
- * 设计：AppState 本身可 Clone（cheap），内部通过 Arc<Mutex<...>> 共享可变数据。
- * 这是 axum 的推荐模式，也允许从 AppState 直接提取 Key（FromRef<AppState>）。
- */
-
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::collections::HashMap;
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
 use axum_extra::extract::cookie::Key;
 use axum::extract::FromRef;
+
+// ============================================================
+//  图像调节参数
+// ============================================================
+#[derive(Debug, Clone, Default)]
+pub struct ImageSettings {
+    pub brightness: i32,   // -100 ~ 100
+    pub contrast: i32,     // -100 ~ 100
+    pub saturation: i32,   // -100 ~ 100
+    pub flip_h: bool,
+    pub flip_v: bool,
+    pub rotation: u32,     // 0 / 90 / 180 / 270
+}
 
 // ============================================================
 //  摄像头状态
@@ -95,26 +103,40 @@ impl EmailConfig {
 pub struct AppState {
     pub camera: Arc<Mutex<CameraState>>,
     pub email_cfg: Arc<Mutex<EmailConfig>>,
+    /// 当前激活的摄像头索引（原子，允许无锁读写）
+    pub camera_idx: Arc<AtomicUsize>,
+    /// 已探测到的摄像头列表 (index, name)
+    pub available_cameras: Arc<Mutex<Vec<(u32, String)>>>,
+    /// 图像调节参数
+    pub image_settings: Arc<Mutex<ImageSettings>>,
+    /// 登录失败计数 IP -> (attempts, lockout_until_secs)
+    pub login_attempts: Arc<Mutex<HashMap<String, (u32, u64)>>>,
     /// 广播 JPEG 帧给所有 MJPEG 流客户端
     pub frame_tx: broadcast::Sender<Arc<Vec<u8>>>,
-    /// Cookie 签名密钥（axum-extra PrivateCookieJar 需要）
+    /// WebSocket 事件广播
+    pub ws_tx: broadcast::Sender<String>,
+    /// Cookie 签名密钥
     pub cookie_key: Key,
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(4);
+    pub fn new(camera_idx: usize) -> Self {
+        let (frame_tx, _) = broadcast::channel(4);
+        let (ws_tx, _) = broadcast::channel(32);
         Self {
             camera: Arc::new(Mutex::new(CameraState::default())),
             email_cfg: Arc::new(Mutex::new(EmailConfig::default_smtp())),
-            frame_tx: tx,
+            camera_idx: Arc::new(AtomicUsize::new(camera_idx)),
+            available_cameras: Arc::new(Mutex::new(Vec::new())),
+            image_settings: Arc::new(Mutex::new(ImageSettings::default())),
+            login_attempts: Arc::new(Mutex::new(HashMap::new())),
+            frame_tx,
+            ws_tx,
             cookie_key: Key::generate(),
         }
     }
 }
 
-/// 让 axum-extra 的 PrivateCookieJar 能从 AppState 自动提取 Key
-/// FromRef<AppState> for Key（AppState 是本地类型，无孤儿规则冲突）
 impl FromRef<AppState> for Key {
     fn from_ref(state: &AppState) -> Self {
         state.cookie_key.clone()
