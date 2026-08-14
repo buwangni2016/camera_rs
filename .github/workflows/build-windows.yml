@@ -8,6 +8,8 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
@@ -28,9 +30,11 @@ jobs:
       - name: Build release
         run: cargo build --release
 
-      - name: Upload EXE
-        uses: actions/upload-artifact@v4
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: camera_rs-windows-x64
-          path: target\release\camera_rs.exe
-          retention-days: 30
+          tag_name: latest
+          name: camera_rs latest
+          body: Windows 摄像头监控程序，下载后直接运行，浏览器访问 http://localhost:5000
+          files: target\release\camera_rs.exe
+          make_latest: true
