@@ -322,9 +322,33 @@ fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32) {
                     });
                 }
 
-                // 发送 WebSocket 事件
+                // WebSocket 事件
                 let msg = serde_json::json!({"event":"motion","count":cam.motion_count}).to_string();
                 state.ws_tx.send(msg).ok();
+
+                // 异步：OneDrive 上传 + 多渠道通知
+                let notify_cfg   = state.notify_cfg.lock().clone();
+                let onedrive_cfg = state.onedrive_cfg.lock().clone();
+                let jpeg_copy    = jpeg.clone();
+                let filename     = format!("motion/{}.jpg", ts_str());
+                let count        = cam.motion_count;
+                tokio::spawn(async move {
+                    // 1. 上传到 OneDrive，获取分享链接
+                    let share_url = if onedrive_cfg.upload_motion {
+                        crate::upload::upload_file(
+                            &onedrive_cfg, &filename, &jpeg_copy, "image/jpeg"
+                        ).await
+                    } else { None };
+                    // 2. 发送所有通知渠道
+                    crate::notify::send_all(
+                        &notify_cfg,
+                        crate::notify::NotifyEvent::Motion {
+                            count,
+                            image: &jpeg_copy,
+                            image_url: share_url.as_deref(),
+                        }
+                    ).await;
+                });
             }
         }
 
