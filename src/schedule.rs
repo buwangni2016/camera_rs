@@ -28,6 +28,9 @@ pub enum ScheduleAction {
     StopRecord,     // 停止录像
     EnableNotify,   // 启用通知
     DisableNotify,  // 禁用通知（勿扰模式）
+    DailyReport,    // 发送每日统计报告
+    ClearHeatmap,   // 清空运动热力图
+    AutoUpload,     // 立即触发云存储上传
 }
 
 impl ScheduleRule {
@@ -64,51 +67,79 @@ fn weekday_bit(wd: Weekday) -> u8 {
 /// 后台定时任务循环（每分钟执行一次）
 pub async fn schedule_loop(state: crate::state::AppState) {
     loop {
-        apply_schedules(&state);
+        apply_schedules_async(&state).await;
         tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
     }
 }
 
-fn apply_schedules(state: &crate::state::AppState) {
+async fn apply_schedules_async(state: &crate::state::AppState) {
     let rules = state.schedule_rules.lock().clone();
     for rule in &rules {
         if !rule.is_active_now() { continue; }
         match rule.action {
-            ScheduleAction::ArmMotion => {
-                let mut cam = state.camera.lock();
-                if !cam.motion_detect {
-                    cam.motion_detect = true;
-                    cam.prev_gray = None;
-                    tracing::info!("定时任务「{}」: 已开启运动侦测", rule.name);
+            ScheduleAction::DailyReport => {
+                let s = state.clone();
+                tokio::spawn(async move { crate::report::send_daily_report(&s).await });
+            }
+            ScheduleAction::ClearHeatmap => {
+                crate::heatmap::clear_heatmap(state);
+                tracing::info!("定时任务「{}」: 已清空热力图", rule.name);
+            }
+            ScheduleAction::AutoUpload => {
+                let jpeg = state.camera.lock().latest_jpeg.clone();
+                if let Some(j) = jpeg {
+                    let od = state.onedrive_cfg.lock().clone();
+                    let gd = state.gdrive_cfg.lock().clone();
+                    let ft = state.ftp_cfg.lock().clone();
+                    let fname = format!("auto/{}.jpg", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+                    tokio::spawn(async move {
+                        crate::upload::upload_all(&od, &gd, &ft, &fname, &j, crate::upload::UploadKind::Photo).await;
+                    });
                 }
             }
-            ScheduleAction::DisarmMotion => {
-                let mut cam = state.camera.lock();
-                if cam.motion_detect {
-                    cam.motion_detect = false;
-                    tracing::info!("定时任务「{}」: 已关闭运动侦测", rule.name);
-                }
-            }
-            ScheduleAction::DisableNotify => {
-                state.notify_suppressed.store(true, Ordering::Relaxed);
-            }
-            ScheduleAction::EnableNotify => {
-                state.notify_suppressed.store(false, Ordering::Relaxed);
-            }
-            ScheduleAction::StartRecord => {
-                let mut cam = state.camera.lock();
-                if !cam.recording {
-                    cam.recording = true;
-                    tracing::info!("定时任务「{}」: 已开始录像", rule.name);
-                }
-            }
-            ScheduleAction::StopRecord => {
-                let mut cam = state.camera.lock();
-                if cam.recording {
-                    cam.recording = false;
-                    tracing::info!("定时任务「{}」: 已停止录像", rule.name);
-                }
+            _ => apply_sync_rule(state, rule),
+        }
+    }
+}
+
+fn apply_sync_rule(state: &crate::state::AppState, rule: &ScheduleRule) {
+    match rule.action {
+        ScheduleAction::ArmMotion => {
+            let mut cam = state.camera.lock();
+            if !cam.motion_detect {
+                cam.motion_detect = true;
+                cam.prev_gray = None;
+                tracing::info!("定时任务「{}」: 已开启运动侦测", rule.name);
             }
         }
+        ScheduleAction::DisarmMotion => {
+            let mut cam = state.camera.lock();
+            if cam.motion_detect {
+                cam.motion_detect = false;
+                tracing::info!("定时任务「{}」: 已关闭运动侦测", rule.name);
+            }
+        }
+        ScheduleAction::DisableNotify => {
+            state.notify_suppressed.store(true, Ordering::Relaxed);
+        }
+        ScheduleAction::EnableNotify => {
+            state.notify_suppressed.store(false, Ordering::Relaxed);
+        }
+        ScheduleAction::StartRecord => {
+            let mut cam = state.camera.lock();
+            if !cam.recording {
+                cam.recording = true;
+                tracing::info!("定时任务「{}」: 已开始录像", rule.name);
+            }
+        }
+        ScheduleAction::StopRecord => {
+            let mut cam = state.camera.lock();
+            if cam.recording {
+                cam.recording = false;
+                tracing::info!("定时任务「{}」: 已停止录像", rule.name);
+            }
+        }
+        // Async actions (DailyReport, ClearHeatmap, AutoUpload) handled in apply_schedules_async
+        _ => {}
     }
 }

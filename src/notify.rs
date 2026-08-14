@@ -18,6 +18,10 @@ pub struct NotifyConfig {
     pub bark:       BarkCfg,
     pub pushplus:   PushPlusCfg,
     pub webhook:    WebhookCfg,
+    pub discord:    DiscordCfg,
+    pub slack:      SlackCfg,
+    pub twilio:     TwilioCfg,
+    pub ntfy:       NtfyCfg,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -70,6 +74,42 @@ pub struct WebhookCfg {
     pub url:     String,
     // POST body 模板，支持占位符：{event} {count} {image_url} {timestamp}
     pub body_template: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DiscordCfg {
+    pub enabled:     bool,
+    pub webhook_url: String,   // Discord Webhook URL
+    pub username:    String,   // 机器人显示名称（留空用默认）
+    pub avatar_url:  String,   // 机器人头像 URL（留空用默认）
+    pub send_image:  bool,     // 是否上传图片附件
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SlackCfg {
+    pub enabled:     bool,
+    pub webhook_url: String,   // Slack Incoming Webhook URL
+    pub channel:     String,   // 频道（留空用 Webhook 默认）
+    pub username:    String,   // 机器人名称（留空用默认）
+    pub icon_emoji:  String,   // 图标 emoji，如 :camera:
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct TwilioCfg {
+    pub enabled:      bool,
+    pub account_sid:  String,
+    pub auth_token:   String,
+    pub from_number:  String,  // +1234567890
+    pub to_numbers:   String,  // 逗号分隔，支持多个号码
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct NtfyCfg {
+    pub enabled:    bool,
+    pub server_url: String,  // https://ntfy.sh 或自建
+    pub topic:      String,  // 推送话题
+    pub priority:   String,  // default / high / urgent
+    pub tags:       String,  // 逗号分隔标签，如 warning,camera
 }
 
 // ============================================================
@@ -195,6 +235,46 @@ pub async fn send_all(cfg: &NotifyConfig, event: NotifyEvent<'_>) {
         handles.push(tokio::spawn(async move {
             if let Err(e) = send_webhook(&c, &cfg, &t, &b, iu.as_deref()).await {
                 tracing::warn!("Webhook 通知失败: {}", e);
+            }
+        }));
+    }
+
+    if cfg.discord.enabled && !cfg.discord.webhook_url.is_empty() {
+        let c = client.clone(); let cfg = cfg.discord.clone();
+        let t = title.clone(); let b = body.clone(); let img = image.to_vec();
+        handles.push(tokio::spawn(async move {
+            if let Err(e) = send_discord(&c, &cfg, &img, &t, &b).await {
+                tracing::warn!("Discord 通知失败: {}", e);
+            }
+        }));
+    }
+
+    if cfg.slack.enabled && !cfg.slack.webhook_url.is_empty() {
+        let c = client.clone(); let cfg = cfg.slack.clone();
+        let t = title.clone(); let b = body.clone(); let iu = image_url.map(String::from);
+        handles.push(tokio::spawn(async move {
+            if let Err(e) = send_slack(&c, &cfg, &t, &b, iu.as_deref()).await {
+                tracing::warn!("Slack 通知失败: {}", e);
+            }
+        }));
+    }
+
+    if cfg.twilio.enabled && !cfg.twilio.account_sid.is_empty() {
+        let c = client.clone(); let cfg = cfg.twilio.clone();
+        let t = title.clone(); let b = body.clone();
+        handles.push(tokio::spawn(async move {
+            if let Err(e) = send_twilio_sms(&c, &cfg, &t, &b).await {
+                tracing::warn!("Twilio SMS 通知失败: {}", e);
+            }
+        }));
+    }
+
+    if cfg.ntfy.enabled && !cfg.ntfy.topic.is_empty() {
+        let c = client.clone(); let cfg = cfg.ntfy.clone();
+        let t = title.clone(); let b = body.clone(); let img = image.to_vec();
+        handles.push(tokio::spawn(async move {
+            if let Err(e) = send_ntfy(&c, &cfg, &img, &t, &b).await {
+                tracing::warn!("ntfy 通知失败: {}", e);
             }
         }));
     }
@@ -395,5 +475,129 @@ async fn send_webhook(
     };
 
     client.post(&cfg.url).json(&payload).send().await?;
+    Ok(())
+}
+
+// ============================================================
+//  Discord
+// ============================================================
+
+async fn send_discord(
+    client: &reqwest::Client, cfg: &DiscordCfg,
+    image: &[u8], title: &str, body: &str,
+) -> anyhow::Result<()> {
+    if cfg.send_image && !image.is_empty() {
+        // 上传图片附件 + embed
+        let embed = serde_json::json!({
+            "title": title,
+            "description": body,
+            "color": 15158332,
+            "image": {"url": "attachment://capture.jpg"},
+        });
+        let payload_json = serde_json::json!({
+            "username": if cfg.username.is_empty() { "Camera RS" } else { &cfg.username },
+            "embeds": [embed],
+        });
+        let form = reqwest::multipart::Form::new()
+            .text("payload_json", payload_json.to_string())
+            .part("files[0]", reqwest::multipart::Part::bytes(image.to_vec())
+                .file_name("capture.jpg")
+                .mime_str("image/jpeg")?);
+        client.post(&cfg.webhook_url).multipart(form).send().await?;
+    } else {
+        let mut payload = serde_json::json!({
+            "embeds": [{
+                "title": title,
+                "description": body,
+                "color": 15158332,
+            }]
+        });
+        if !cfg.username.is_empty() { payload["username"] = cfg.username.clone().into(); }
+        if !cfg.avatar_url.is_empty() { payload["avatar_url"] = cfg.avatar_url.clone().into(); }
+        client.post(&cfg.webhook_url).json(&payload).send().await?;
+    }
+    Ok(())
+}
+
+// ============================================================
+//  Slack
+// ============================================================
+
+async fn send_slack(
+    client: &reqwest::Client, cfg: &SlackCfg,
+    title: &str, body: &str, image_url: Option<&str>,
+) -> anyhow::Result<()> {
+    let text = format!("*{}*\n{}", title, body);
+    let mut blocks = vec![
+        serde_json::json!({"type":"section","text":{"type":"mrkdwn","text":text}}),
+    ];
+    if let Some(url) = image_url {
+        blocks.push(serde_json::json!({
+            "type": "image",
+            "image_url": url,
+            "alt_text": title,
+        }));
+    }
+
+    let mut payload = serde_json::json!({"blocks": blocks});
+    if !cfg.channel.is_empty()   { payload["channel"]    = cfg.channel.clone().into(); }
+    if !cfg.username.is_empty()  { payload["username"]   = cfg.username.clone().into(); }
+    if !cfg.icon_emoji.is_empty(){ payload["icon_emoji"] = cfg.icon_emoji.clone().into(); }
+
+    client.post(&cfg.webhook_url).json(&payload).send().await?;
+    Ok(())
+}
+
+// ============================================================
+//  Twilio SMS
+// ============================================================
+
+async fn send_twilio_sms(
+    client: &reqwest::Client, cfg: &TwilioCfg,
+    title: &str, body: &str,
+) -> anyhow::Result<()> {
+    let message = format!("{}: {}", title, body);
+    let url = format!(
+        "https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json",
+        cfg.account_sid
+    );
+    for number in cfg.to_numbers.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        client.post(&url)
+            .basic_auth(&cfg.account_sid, Some(&cfg.auth_token))
+            .form(&[
+                ("From", cfg.from_number.as_str()),
+                ("To",   number),
+                ("Body", message.as_str()),
+            ])
+            .send().await?;
+    }
+    Ok(())
+}
+
+// ============================================================
+//  ntfy (self-hosted / ntfy.sh)
+// ============================================================
+
+async fn send_ntfy(
+    client: &reqwest::Client, cfg: &NtfyCfg,
+    image: &[u8], title: &str, body: &str,
+) -> anyhow::Result<()> {
+    let base = cfg.server_url.trim_end_matches('/');
+    let url  = format!("{}/{}", base, cfg.topic);
+
+    let mut req = client.post(&url)
+        .header("Title",   title)
+        .header("Message", body);
+
+    if !cfg.priority.is_empty() { req = req.header("Priority", &cfg.priority); }
+    if !cfg.tags.is_empty()     { req = req.header("Tags",     &cfg.tags); }
+
+    if !image.is_empty() {
+        req = req
+            .header("Content-Type", "image/jpeg")
+            .body(image.to_vec());
+    }
+
+    req.send().await?;
     Ok(())
 }

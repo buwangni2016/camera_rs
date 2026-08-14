@@ -199,6 +199,47 @@ impl EmailConfig {
 }
 
 // ============================================================
+//  水印配置
+// ============================================================
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatermarkConfig {
+    pub enabled:    bool,
+    pub show_time:  bool,    // 显示时间戳
+    pub show_label: bool,    // 显示自定义文字
+    pub label:      String,  // 自定义文字内容
+    pub position:   String,  // "top_left" | "top_right" | "bottom_left" | "bottom_right"
+    pub font_scale: f32,     // 字体缩放比例 (0.5-3.0)
+    pub opacity:    u8,      // 透明度 0-255
+}
+impl Default for WatermarkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false, show_time: true, show_label: false,
+            label: String::new(), position: "bottom_right".into(),
+            font_scale: 1.0, opacity: 200,
+        }
+    }
+}
+
+// ============================================================
+//  隐私遮罩区域（百分比坐标，0.0-1.0）
+// ============================================================
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrivacyMask {
+    pub enabled: bool,
+    pub x1: f32, pub y1: f32,
+    pub x2: f32, pub y2: f32,
+    pub label: String,
+    pub color: [u8; 3],  // RGB 遮罩颜色，默认黑色
+}
+impl Default for PrivacyMask {
+    fn default() -> Self {
+        Self { enabled: true, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0,
+               label: String::new(), color: [0, 0, 0] }
+    }
+}
+
+// ============================================================
 //  RTSP/IP 摄像头配置
 // ============================================================
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +294,16 @@ pub struct AppState {
     // RTSP 摄像头
     pub rtsp_cameras:       Arc<Mutex<Vec<RtspCamera>>>,
 
+    // 水印
+    pub watermark_cfg:      Arc<Mutex<WatermarkConfig>>,
+
+    // 隐私遮罩
+    pub privacy_masks:      Arc<Mutex<Vec<PrivacyMask>>>,
+
+    // 运动热力图（宽x高格子累加计数）
+    pub heatmap:            Arc<Mutex<Vec<u32>>>,
+    pub heatmap_size:       (u32, u32),   // (cols, rows)
+
     // 事件日志
     pub event_log:          EventLogger,
 
@@ -299,6 +350,10 @@ impl AppState {
             schedule_rules:     Arc::new(Mutex::new(Vec::new())),
             timelapse_cfg:      Arc::new(Mutex::new(TimelapseConfig::default())),
             rtsp_cameras:       Arc::new(Mutex::new(Vec::new())),
+            watermark_cfg:      Arc::new(Mutex::new(WatermarkConfig::default())),
+            privacy_masks:      Arc::new(Mutex::new(Vec::new())),
+            heatmap:            Arc::new(Mutex::new(vec![0u32; 64 * 36])),
+            heatmap_size:       (64, 36),
             event_log:          EventLogger::new(crate::SAVE_DIR),
             ws_tx,
             cookie_key:         Key::generate(),

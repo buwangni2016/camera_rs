@@ -4,16 +4,18 @@ mod config;
 mod email;
 mod events;
 mod handlers;
+mod heatmap;
 mod html;
 mod motion;
 mod notify;
+mod report;
 mod schedule;
 mod state;
 mod storage;
 mod upload;
 
 use std::net::SocketAddr;
-use axum::{Router, routing::{get, post}};
+use axum::{Router, routing::{get, post}, middleware, extract::ConnectInfo};
 use tower_http::cors::CorsLayer;
 use state::AppState;
 use handlers::*;
@@ -28,6 +30,31 @@ pub const MAX_LOGIN_ATTEMPTS: u32 = 5;
 pub const LOCKOUT_SECS:       u64 = 900;
 pub const MAX_STORAGE_MB:     u64 = 2048;
 pub const PASSWORD:          &str = "admin";
+
+/// IP 白名单中间件：若 security.ip_whitelist 非空，只允许列表中的 IP 访问
+async fn ip_whitelist_middleware(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let whitelist = state.security.lock().ip_whitelist.clone();
+    if !whitelist.is_empty() {
+        let ip = addr.ip().to_string();
+        if !whitelist.iter().any(|w| ip_matches(&ip, w)) {
+            return axum::response::Response::builder()
+                .status(axum::http::StatusCode::FORBIDDEN)
+                .body(axum::body::Body::from("IP not allowed"))
+                .unwrap();
+        }
+    }
+    next.run(request).await
+}
+
+fn ip_matches(ip: &str, pattern: &str) -> bool {
+    // 支持精确匹配和 CIDR 前缀匹配（如 "192.168.1."）
+    ip == pattern || ip.starts_with(pattern.trim_end_matches('*'))
+}
 
 #[tokio::main]
 async fn main() {
@@ -131,6 +158,22 @@ async fn main() {
         .route("/api/stats",      get(api_stats))
         .route("/api/events",     get(api_events))
         .route("/api/trigger",    post(api_trigger))
+        // 水印
+        .route("/watermark",      get(get_watermark).post(save_watermark))
+        // 隐私遮罩
+        .route("/privacy_masks",  get(get_privacy_masks).post(save_privacy_masks))
+        // 运动热力图
+        .route("/heatmap",        get(get_heatmap_json))
+        .route("/heatmap/image",  get(get_heatmap_image))
+        .route("/heatmap/clear",  post(clear_heatmap_handler))
+        // 每日报告
+        .route("/report/send",    post(trigger_daily_report))
+        // RTSP 摄像头
+        .route("/rtsp_cameras",   get(get_rtsp_cameras).post(save_rtsp_cameras))
+        // 安全配置
+        .route("/security_config",get(get_security_config).post(save_security_config))
+        // 录像限制
+        .route("/record_limits",  get(get_record_limits).post(save_record_limits))
         // 系统
         .route("/health",         get(health_check))
         .route("/sysinfo",        get(sys_info))
@@ -138,6 +181,7 @@ async fn main() {
         .route("/manifest.json",  get(pwa_manifest))
         .route("/config/export",  get(export_config))
         .route("/config/import",  post(import_config))
+        .layer(middleware::from_fn_with_state(state.clone(), ip_whitelist_middleware))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
