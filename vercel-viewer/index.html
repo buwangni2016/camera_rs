@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>摄像头监控 - 云端查看</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;color:#eee;font-family:'Segoe UI',sans-serif;min-height:100vh}
+header{background:#16213e;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #0f3460;position:sticky;top:0;z-index:100}
+header h1{font-size:18px;color:#e94560}
+.subtitle{font-size:12px;color:#aaa;margin-top:2px}
+.setup-box{max-width:600px;margin:60px auto;background:#16213e;border:1px solid #0f3460;border-radius:14px;padding:36px}
+.setup-box h2{color:#e94560;margin-bottom:8px;font-size:18px}
+.setup-box p{color:#aaa;font-size:13px;margin-bottom:20px;line-height:1.6}
+.input-group{display:flex;gap:8px;margin-bottom:12px}
+.input-group input{flex:1;padding:10px 14px;border-radius:8px;border:1px solid #0f3460;background:#1a1a2e;color:#eee;font-size:14px;outline:none}
+.input-group input:focus{border-color:#e94560}
+.btn{padding:10px 20px;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600}
+.btn-red{background:#e94560;color:#fff}
+.btn-blue{background:#0f3460;color:#fff}
+.btn-green{background:#0d7377;color:#fff}
+.controls{padding:14px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #0f3460}
+.filter-btn{padding:6px 14px;border-radius:6px;border:1px solid #0f3460;background:#16213e;color:#eee;cursor:pointer;font-size:13px}
+.filter-btn.active{background:#e94560;border-color:#e94560}
+.gallery{display:flex;flex-wrap:wrap;gap:12px;padding:16px}
+.item{background:#16213e;border:1px solid #0f3460;border-radius:10px;overflow:hidden;width:200px;cursor:pointer;transition:border-color .2s}
+.item:hover{border-color:#e94560}
+.item img,.item video{width:100%;display:block;height:130px;object-fit:cover}
+.item-info{padding:8px 10px}
+.item-name{font-size:12px;color:#aaa;word-break:break-all}
+.item-size{font-size:11px;color:#555;margin-top:2px}
+.item-actions{display:flex;gap:6px;padding:0 10px 10px}
+.item-btn{flex:1;padding:5px;border:none;border-radius:5px;cursor:pointer;font-size:12px;font-weight:600}
+.item-btn:hover{opacity:.8}
+.btn-dl{background:#0f3460;color:#fff}
+.btn-view{background:#0d7377;color:#fff}
+.empty{color:#555;font-size:15px;padding:60px;text-align:center;width:100%}
+.loading{color:#7af;font-size:14px;padding:40px;text-align:center;width:100%}
+/* 全屏查看 */
+.lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:200;align-items:center;justify-content:center;flex-direction:column}
+.lightbox.show{display:flex}
+.lightbox img,.lightbox video{max-width:95vw;max-height:88vh;border-radius:8px}
+.lightbox-close{position:absolute;top:16px;right:20px;color:#fff;font-size:28px;cursor:pointer;background:none;border:none}
+.lightbox-name{color:#aaa;font-size:13px;margin-top:10px}
+/* 状态栏 */
+.statusbar{position:fixed;bottom:0;left:0;right:0;background:#16213e;border-top:1px solid #0f3460;padding:6px 16px;font-size:12px;color:#aaa;display:flex;justify-content:space-between}
+.dot-green{width:8px;height:8px;border-radius:50%;background:#0d7377;display:inline-block;margin-right:5px}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>摄像头监控 — 云端查看</h1>
+    <div class="subtitle" id="folder-info">OneDrive 远程查看器</div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <span id="item-count" style="font-size:13px;color:#aaa"></span>
+    <button class="btn btn-blue" onclick="showSetup()" style="font-size:12px;padding:6px 12px">⚙ 更换链接</button>
+    <button class="btn btn-green" onclick="loadFiles()" style="font-size:12px;padding:6px 12px">🔄 刷新</button>
+  </div>
+</header>
+
+<!-- 设置页 -->
+<div id="setup-page">
+<div class="setup-box">
+  <h2>🔗 连接 OneDrive 文件夹</h2>
+  <p>
+    将此页面部署到 Vercel 后，粘贴从 camera_rs 设置页生成的 <strong>OneDrive 文件夹分享链接</strong>，即可在任何地方查看摄像头捕获的照片和视频。
+    <br><br>
+    操作步骤：<br>
+    1. 在 camera_rs 设置页 → OneDrive → 填入 Maton API Key → 保存<br>
+    2. 点击「生成文件夹链接」，复制链接<br>
+    3. 粘贴到下方输入框
+  </p>
+  <div class="input-group">
+    <input type="text" id="share-input" placeholder="https://onedrive.live.com/..." value="">
+    <button class="btn btn-red" onclick="connect()">连接</button>
+  </div>
+  <p style="font-size:12px;color:#555">链接将保存在浏览器本地，不会上传到任何服务器。</p>
+</div>
+</div>
+
+<!-- 主内容 -->
+<div id="main-page" style="display:none">
+  <div class="controls">
+    <button class="filter-btn active" id="f-all" onclick="setFilter('all')">全部</button>
+    <button class="filter-btn" id="f-photos" onclick="setFilter('photos')">📷 照片</button>
+    <button class="filter-btn" id="f-videos" onclick="setFilter('videos')">🎥 录像</button>
+    <button class="filter-btn" id="f-motion" onclick="setFilter('motion')">⚡ 运动触发</button>
+    <span style="margin-left:auto;font-size:12px;color:#555" id="last-refresh"></span>
+  </div>
+  <div class="gallery" id="gallery"><div class="loading">加载中...</div></div>
+</div>
+
+<!-- 全屏查看 -->
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <button class="lightbox-close" onclick="closeLightbox()">✕</button>
+  <img id="lb-img" src="" style="display:none">
+  <video id="lb-vid" controls style="display:none"></video>
+  <div class="lightbox-name" id="lb-name"></div>
+</div>
+
+<div class="statusbar">
+  <span><span class="dot-green"></span>Vercel 云端查看器 | OneDrive 存储</span>
+  <span id="status-text">就绪</span>
+</div>
+
+<script>
+const STORAGE_KEY = 'camera_rs_share_url';
+let allFiles = [], currentFilter = 'all';
+
+// ============================================================
+//  初始化
+// ============================================================
+window.onload = () => {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    document.getElementById('share-input').value = saved;
+    document.getElementById('setup-page').style.display = 'none';
+    document.getElementById('main-page').style.display = '';
+    loadFiles();
+  }
+};
+
+function showSetup() {
+  document.getElementById('setup-page').style.display = '';
+  document.getElementById('main-page').style.display = 'none';
+}
+
+function connect() {
+  const url = document.getElementById('share-input').value.trim();
+  if (!url) return alert('请输入分享链接');
+  localStorage.setItem(STORAGE_KEY, url);
+  document.getElementById('setup-page').style.display = 'none';
+  document.getElementById('main-page').style.display = '';
+  loadFiles();
+}
+
+// ============================================================
+//  加载文件列表（通过 OneDrive 匿名 API）
+// ============================================================
+function encodeShareUrl(url) {
+  const b64 = btoa(url);
+  return 'u!' + b64.replace(/=/g,'').replace(/\//g,'_').replace(/\+/g,'-');
+}
+
+async function loadFiles() {
+  const shareUrl = localStorage.getItem(STORAGE_KEY);
+  if (!shareUrl) return showSetup();
+
+  document.getElementById('gallery').innerHTML = '<div class="loading">⏳ 加载中...</div>';
+  document.getElementById('status-text').textContent = '加载文件列表...';
+
+  try {
+    const shareId = encodeShareUrl(shareUrl);
+    // 尝试 Graph API 匿名访问
+    const apiUrl = `https://api.onedrive.com/v1.0/shares/${shareId}/driveItem/children?$orderby=lastModifiedDateTime desc&$top=200`;
+    const resp = await fetch(apiUrl);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+
+    allFiles = (data.value || []).map(item => ({
+      name:     item.name,
+      size:     item.size,
+      modified: item.lastModifiedDateTime,
+      isVideo:  /\.(avi|mp4|mov|mkv)$/i.test(item.name),
+      isImage:  /\.(jpg|jpeg|png|gif|webp)$/i.test(item.name),
+      // 下载链接
+      downloadUrl: item['@microsoft.graph.downloadUrl'] || item.webUrl,
+      // 文件夹分类
+      folder: getFolderType(item.name),
+    }));
+
+    const folder = shareUrl.includes('camera_rs') ? 'camera_rs' : 'OneDrive';
+    document.getElementById('folder-info').textContent = `${folder} · ${allFiles.length} 个文件`;
+    document.getElementById('item-count').textContent = `${allFiles.length} 个文件`;
+    document.getElementById('last-refresh').textContent = `最后刷新: ${new Date().toLocaleTimeString('zh-CN')}`;
+    document.getElementById('status-text').textContent = `已加载 ${allFiles.length} 个文件`;
+
+    renderGallery();
+  } catch(e) {
+    document.getElementById('gallery').innerHTML = `<div class="empty">⚠️ 加载失败：${e.message}<br><br>请确认分享链接正确且为公开共享</div>`;
+    document.getElementById('status-text').textContent = '加载失败';
+  }
+}
+
+function getFolderType(name) {
+  const n = name.toLowerCase();
+  if (n.includes('motion')) return 'motion';
+  if (n.includes('video') || n.endsWith('.avi') || n.endsWith('.mp4')) return 'videos';
+  return 'photos';
+}
+
+// ============================================================
+//  渲染
+// ============================================================
+function setFilter(f) {
+  currentFilter = f;
+  ['all','photos','videos','motion'].forEach(id => {
+    document.getElementById('f-'+id)?.classList.toggle('active', id === f);
+  });
+  renderGallery();
+}
+
+function renderGallery() {
+  const grid = document.getElementById('gallery');
+  const filtered = currentFilter === 'all'
+    ? allFiles
+    : allFiles.filter(f => f.folder === currentFilter || (currentFilter === 'videos' && f.isVideo));
+
+  if (!filtered.length) {
+    grid.innerHTML = '<div class="empty">📂 暂无文件</div>';
+    return;
+  }
+
+  grid.innerHTML = '';
+  filtered.forEach(file => {
+    const div = document.createElement('div');
+    div.className = 'item';
+    const mediaHtml = file.isImage
+      ? `<img src="${file.downloadUrl}" loading="lazy" onerror="this.style.display='none'">`
+      : file.isVideo
+        ? `<video src="${file.downloadUrl}" preload="metadata" style="height:130px;object-fit:cover"></video>`
+        : `<div style="height:130px;background:#0f3460;display:flex;align-items:center;justify-content:center;font-size:36px">📄</div>`;
+    const size = formatSize(file.size);
+    const time = new Date(file.modified).toLocaleString('zh-CN');
+    div.innerHTML = `${mediaHtml}
+      <div class="item-info">
+        <div class="item-name">${file.name}</div>
+        <div class="item-size">${size} · ${time}</div>
+      </div>
+      <div class="item-actions">
+        <button class="item-btn btn-view" onclick="openLightbox('${encodeURIComponent(file.downloadUrl)}','${escapeHtml(file.name)}','${file.isVideo}')">查看</button>
+        <a href="${file.downloadUrl}" download="${file.name}" class="item-btn btn-dl" style="text-align:center;text-decoration:none">下载</a>
+      </div>`;
+    grid.appendChild(div);
+  });
+}
+
+function formatSize(bytes) {
+  if (!bytes) return '-';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/1024/1024).toFixed(1) + ' MB';
+}
+
+function escapeHtml(s) { return s.replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+
+// ============================================================
+//  全屏查看
+// ============================================================
+function openLightbox(urlEncoded, name, isVideo) {
+  const url = decodeURIComponent(urlEncoded);
+  const lb = document.getElementById('lightbox');
+  const img = document.getElementById('lb-img');
+  const vid = document.getElementById('lb-vid');
+  document.getElementById('lb-name').textContent = name;
+
+  if (isVideo === 'true') {
+    img.style.display = 'none';
+    vid.src = url; vid.style.display = '';
+    vid.play();
+  } else {
+    vid.style.display = 'none'; vid.pause();
+    img.src = url; img.style.display = '';
+  }
+  lb.classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeLightbox() {
+  const lb = document.getElementById('lightbox');
+  lb.classList.remove('show');
+  document.getElementById('lb-vid').pause();
+  document.body.style.overflow = '';
+}
+
+// 键盘 ESC 关闭
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+
+// 自动刷新（每 30 秒）
+setInterval(() => {
+  if (document.getElementById('main-page').style.display !== 'none') loadFiles();
+}, 30000);
+</script>
+</body>
+</html>
