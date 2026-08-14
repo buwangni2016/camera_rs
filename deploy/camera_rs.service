@@ -1,0 +1,25 @@
+[Unit]
+Description=Camera RS 摄像头监控系统
+After=network.target
+# 确保在摄像头设备就绪后启动
+After=dev-video0.device
+
+[Service]
+Type=simple
+User=your_username
+WorkingDirectory=/home/your_username/camera_rs
+ExecStart=/home/your_username/camera_rs/target/release/camera_rs
+ExecStop=/bin/kill -s SIGTERM $MAINPID
+Restart=always
+RestartSec=5
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=camera_rs
+# 环境变量
+Environment=RUST_LOG=info
+# 允许访问摄像头设备
+SupplementaryGroups=video
+
+[Install]
+WantedBy=multi-user.target
