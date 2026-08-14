@@ -33,7 +33,7 @@ pub const MAIN_HTML: &str = r#"<!DOCTYPE html><html lang="zh"><head>
 body{background:#1a1a2e;color:#eee;font-family:'Segoe UI',sans-serif}
 header{background:#16213e;padding:12px 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #0f3460}
 header h1{font-size:17px;color:#e94560}
-.header-right{display:flex;align-items:center;gap:8px}
+.header-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 #clock{font-size:12px;color:#aaa}
 .nav-link{font-size:13px;color:#7af;cursor:pointer;padding:5px 10px;border-radius:6px;border:1px solid #0f3460}
 .nav-link:hover,.nav-link.active{background:#0f3460}
@@ -49,7 +49,8 @@ header h1{font-size:17px;color:#e94560}
 .card h3{font-size:11px;color:#aaa;margin-bottom:9px;text-transform:uppercase;letter-spacing:1px}
 .btn{width:100%;padding:8px;border:none;border-radius:7px;cursor:pointer;font-size:13px;font-weight:600;margin-bottom:6px;transition:opacity .2s}
 .btn:hover{opacity:.85}.btn:last-child{margin-bottom:0}
-.btn-blue{background:#0f3460;color:#fff}.btn-green{background:#0d7377;color:#fff}.btn-red{background:#e94560;color:#fff}
+.btn-blue{background:#0f3460;color:#fff}.btn-green{background:#0d7377;color:#fff}
+.btn-red{background:#e94560;color:#fff}.btn-orange{background:#c86020;color:#fff}
 .btn-row{display:flex;gap:5px;margin-bottom:6px}
 .btn-row .btn{margin-bottom:0}
 .toggle-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
@@ -66,9 +67,9 @@ input:checked+.slider:before{transform:translateX(20px)}
 input[type=range]{width:100%;accent-color:#e94560;margin:3px 0}
 .range-row{display:flex;justify-content:space-between;font-size:12px;color:#aaa;margin-bottom:2px}
 select.form-sel{width:100%;padding:8px;border-radius:6px;border:1px solid #0f3460;background:#1a1a2e;color:#eee;font-size:13px;cursor:pointer;outline:none}
-select.form-sel:focus{border-color:#e94560}
 #toast{position:fixed;bottom:18px;right:18px;background:#0d7377;color:#fff;padding:8px 16px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:999}
 #toast.show{opacity:1}
+/* 文件管理 */
 .gallery-tabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
 .tab-btn{padding:6px 14px;border-radius:7px;border:1px solid #0f3460;background:#16213e;color:#eee;cursor:pointer;font-size:13px}
 .tab-btn.active{background:#e94560;border-color:#e94560}
@@ -80,10 +81,16 @@ select.form-sel:focus{border-color:#e94560}
 .item-btn{flex:1;padding:4px;border:none;border-radius:5px;cursor:pointer;font-size:12px}
 .item-btn-dl{background:#0f3460;color:#fff}.item-btn-del{background:#e94560;color:#fff}
 .no-files{color:#666;font-size:14px;padding:20px}
+/* 设置页 */
+.settings-grid{display:flex;gap:12px;flex-wrap:wrap;padding:12px}
+.settings-col{flex:1;min-width:300px;display:flex;flex-direction:column;gap:12px}
 .form-row{margin-bottom:9px}
 .form-row label{font-size:12px;color:#aaa;display:block;margin-bottom:3px}
 .form-input{width:100%;padding:7px;border-radius:6px;border:1px solid #0f3460;background:#1a1a2e;color:#eee;font-size:13px}
 .form-input:focus{outline:none;border-color:#e94560}
+.section-title{font-size:14px;color:#7af;font-weight:600;margin:4px 0 10px;padding-bottom:6px;border-bottom:1px solid #0f3460}
+.status-ok{color:#0d7377;font-size:12px;margin-top:6px}
+.status-err{color:#e94560;font-size:12px;margin-top:6px}
 @media(max-width:700px){.panel{width:100%}.video-box{min-width:unset}}
 </style></head><body>
 <header>
@@ -92,11 +99,12 @@ select.form-sel:focus{border-color:#e94560}
     <span id="clock"></span>
     <span class="nav-link active" id="nav-monitor" onclick="showPage('monitor')">实时监控</span>
     <span class="nav-link" id="nav-gallery" onclick="showPage('gallery');loadGallery('photos')">文件管理</span>
-    <span class="nav-link" id="nav-settings" onclick="showPage('settings')">设置</span>
+    <span class="nav-link" id="nav-settings" onclick="showPage('settings');loadSettings()">设置</span>
     <a href="/logout" class="nav-link">退出</a>
   </div>
 </header>
 
+<!-- ===== 实时监控 ===== -->
 <div id="page-monitor">
 <div class="main">
   <div class="video-box">
@@ -106,20 +114,15 @@ select.form-sel:focus{border-color:#e94560}
     <span id="motion-alert">⚠ 移动侦测!</span>
   </div>
   <div class="panel">
-
     <div class="card">
       <h3>摄像头选择</h3>
-      <select class="form-sel" id="camera-select" onchange="switchCamera(this.value)">
-        <option value="">检测中...</option>
-      </select>
+      <select class="form-sel" id="camera-select" onchange="switchCamera(this.value)"><option>检测中...</option></select>
     </div>
-
     <div class="card">
       <h3>控制</h3>
       <button class="btn btn-blue" onclick="takePhoto()">拍照保存</button>
       <button class="btn btn-green" id="rec-btn" onclick="toggleRecord()">开始录像</button>
     </div>
-
     <div class="card">
       <h3>画面调节</h3>
       <div class="range-row"><span>亮度</span><span id="bright-val">0</span></div>
@@ -129,50 +132,35 @@ select.form-sel:focus{border-color:#e94560}
       <div class="range-row"><span>饱和度</span><span id="sat-val">0</span></div>
       <input type="range" min="-100" max="100" value="0" oninput="updateImg('saturation',this.value,'sat-val')">
       <div class="btn-row" style="margin-top:8px">
-        <button class="btn btn-blue" onclick="api('/set_flip?h=1')">⟺ 水平翻转</button>
-        <button class="btn btn-blue" onclick="api('/set_flip?v=1')">↕ 垂直翻转</button>
+        <button class="btn btn-blue" onclick="api('/set_flip?h=1')">⟺ 水平</button>
+        <button class="btn btn-blue" onclick="api('/set_flip?v=1')">↕ 垂直</button>
       </div>
       <div class="btn-row">
-        <button class="btn btn-blue" onclick="api('/set_rotation?deg=90')">↻ 90°</button>
-        <button class="btn btn-blue" onclick="api('/set_rotation?deg=180')">↺ 180°</button>
-        <button class="btn btn-blue" onclick="api('/set_rotation?deg=270')">↻ 270°</button>
-        <button class="btn btn-blue" onclick="api('/set_rotation?deg=0')">⟳ 复位</button>
+        <button class="btn btn-blue" onclick="api('/set_rotation?deg=90')">↻90°</button>
+        <button class="btn btn-blue" onclick="api('/set_rotation?deg=180')">↺180°</button>
+        <button class="btn btn-blue" onclick="api('/set_rotation?deg=270')">↻270°</button>
+        <button class="btn btn-blue" onclick="api('/set_rotation?deg=0')">⟳复位</button>
       </div>
     </div>
-
     <div class="card">
       <h3>功能开关</h3>
-      <div class="toggle-row">
-        <span class="toggle-label">移动侦测</span>
-        <label class="switch"><input type="checkbox" id="t-motion" onchange="toggle('motion',this.checked)"><span class="slider"></span></label>
-      </div>
-      <div class="toggle-row">
-        <span class="toggle-label">运动门控</span>
-        <label class="switch"><input type="checkbox" id="t-gate" onchange="toggle('gate',this.checked)" checked><span class="slider"></span></label>
-      </div>
-      <div class="toggle-row">
-        <span class="toggle-label">定时截图</span>
-        <label class="switch"><input type="checkbox" id="t-auto" onchange="toggle('auto',this.checked)"><span class="slider"></span></label>
-      </div>
+      <div class="toggle-row"><span class="toggle-label">移动侦测</span><label class="switch"><input type="checkbox" id="t-motion" onchange="toggle('motion',this.checked)"><span class="slider"></span></label></div>
+      <div class="toggle-row"><span class="toggle-label">运动门控</span><label class="switch"><input type="checkbox" id="t-gate" onchange="toggle('gate',this.checked)" checked><span class="slider"></span></label></div>
+      <div class="toggle-row"><span class="toggle-label">定时截图</span><label class="switch"><input type="checkbox" id="t-auto" onchange="toggle('auto',this.checked)"><span class="slider"></span></label></div>
       <div style="margin-top:8px">
         <div class="range-row"><span>截图间隔</span><span id="interval-val">10s</span></div>
-        <input type="range" min="5" max="120" value="10" step="5"
-          oninput="document.getElementById('interval-val').textContent=this.value+'s';api('/set_interval?val='+this.value)">
+        <input type="range" min="5" max="120" value="10" step="5" oninput="document.getElementById('interval-val').textContent=this.value+'s';api('/set_interval?val='+this.value)">
       </div>
     </div>
-
     <div class="card">
       <h3>侦测参数</h3>
       <div class="range-row"><span>差分阈值</span><span id="sens-val">30</span></div>
-      <input type="range" min="5" max="80" value="30" step="5"
-        oninput="document.getElementById('sens-val').textContent=this.value;api('/set_sensitivity?val='+this.value)">
+      <input type="range" min="5" max="80" value="30" step="5" oninput="document.getElementById('sens-val').textContent=this.value;api('/set_sensitivity?val='+this.value)">
       <div style="margin-top:6px">
-        <div class="range-row"><span>最小触发面积 px²</span><span id="area-val">1500</span></div>
-        <input type="range" min="200" max="10000" value="1500" step="100"
-          oninput="document.getElementById('area-val').textContent=this.value;api('/set_min_area?val='+this.value)">
+        <div class="range-row"><span>最小面积 px²</span><span id="area-val">1500</span></div>
+        <input type="range" min="200" max="10000" value="1500" step="100" oninput="document.getElementById('area-val').textContent=this.value;api('/set_min_area?val='+this.value)">
       </div>
     </div>
-
     <div class="card">
       <h3>统计</h3>
       <div class="stat-row"><span>分辨率</span><span class="stat-val" id="st-res">-</span></div>
@@ -181,11 +169,11 @@ select.form-sel:focus{border-color:#e94560}
       <div class="stat-row"><span>拍照张数</span><span class="stat-val" id="st-photo">0</span></div>
       <div class="stat-row"><span>录像时长</span><span class="stat-val" id="st-rec">00:00</span></div>
     </div>
-
   </div>
 </div>
 </div>
 
+<!-- ===== 文件管理 ===== -->
 <div id="page-gallery" style="display:none;padding:12px">
   <div class="gallery-tabs">
     <button class="tab-btn active" id="tab-photos" onclick="loadGallery('photos')">照片</button>
@@ -197,30 +185,127 @@ select.form-sel:focus{border-color:#e94560}
   <div class="gallery-grid" id="gallery-grid"><span class="no-files">请选择分类</span></div>
 </div>
 
-<div id="page-settings" style="display:none;padding:12px">
-  <div style="display:flex;gap:12px;flex-wrap:wrap">
-    <div class="card" style="flex:1;min-width:300px;max-width:500px">
-      <h3>邮件告警设置</h3>
-      <div class="form-row"><label>启用邮件告警</label><label class="switch" style="display:inline-block"><input type="checkbox" id="cfg-email-on" onchange="saveCfg()"><span class="slider"></span></label></div>
+<!-- ===== 设置页 ===== -->
+<div id="page-settings" style="display:none">
+<div class="settings-grid">
+
+  <!-- 左列 -->
+  <div class="settings-col">
+
+    <!-- OneDrive -->
+    <div class="card">
+      <div class="section-title">☁️ OneDrive 云存储</div>
+      <div class="form-row"><label>Maton API Key</label><input type="password" id="od-key" class="form-input" placeholder="在 maton.ai/settings 获取"></div>
+      <div class="form-row"><label>目标文件夹</label><input type="text" id="od-folder" class="form-input" value="camera_rs"></div>
+      <div class="toggle-row"><span class="toggle-label">启用 OneDrive</span><label class="switch"><input type="checkbox" id="od-enabled"><span class="slider"></span></label></div>
+      <div class="toggle-row"><span class="toggle-label">上传运动截图</span><label class="switch"><input type="checkbox" id="od-motion" checked><span class="slider"></span></label></div>
+      <div class="toggle-row"><span class="toggle-label">上传手动截图</span><label class="switch"><input type="checkbox" id="od-photos" checked><span class="slider"></span></label></div>
+      <div class="toggle-row"><span class="toggle-label">上传录像</span><label class="switch"><input type="checkbox" id="od-videos"><span class="slider"></span></label></div>
+      <div class="toggle-row"><span class="toggle-label">生成分享链接</span><label class="switch"><input type="checkbox" id="od-share" checked><span class="slider"></span></label></div>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button class="btn btn-green" style="flex:1" onclick="saveOneDrive()">保存</button>
+        <button class="btn btn-blue" style="flex:1" onclick="createShare()">生成文件夹链接</button>
+        <button class="btn btn-blue" style="flex:1" onclick="api('/upload_now').then(d=>toast(d.ok?'已上传当前帧':'上传失败'))">上传当前帧</button>
+      </div>
+      <div class="form-row" style="margin-top:8px"><label>文件夹分享链接（供 Vercel Viewer 使用）</label><input type="text" id="od-share-url" class="form-input" readonly placeholder="点击"生成文件夹链接"后自动填入"></div>
+      <p id="od-status" class="status-ok" style="display:none"></p>
+    </div>
+
+    <!-- 邮件 -->
+    <div class="card">
+      <div class="section-title">📧 邮件告警</div>
+      <div class="toggle-row"><span class="toggle-label">启用邮件告警</span><label class="switch"><input type="checkbox" id="cfg-email-on"><span class="slider"></span></label></div>
       <div class="form-row"><label>SMTP 服务器</label><input type="text" id="cfg-smtp-host" class="form-input" value="smtp.gmail.com"></div>
       <div class="form-row"><label>SMTP 端口</label><input type="number" id="cfg-smtp-port" class="form-input" value="465"></div>
       <div class="form-row"><label>发件人邮箱</label><input type="email" id="cfg-email-from" class="form-input"></div>
       <div class="form-row"><label>邮箱密码/应用密码</label><input type="password" id="cfg-email-pass" class="form-input" placeholder="留空不修改"></div>
       <div class="form-row"><label>收件人邮箱</label><input type="email" id="cfg-email-to" class="form-input"></div>
-      <div class="form-row"><label>告警冷却时间（秒）</label><input type="number" id="cfg-cooldown" class="form-input" value="60"></div>
-      <div class="form-row"><label>触发条件</label><label style="font-size:13px"><input type="checkbox" id="cfg-on-motion" checked> 移动侦测</label></div>
-      <button class="btn btn-green" onclick="saveCfg()">保存设置</button>
-      <button class="btn btn-blue" onclick="testEmail()" style="margin-top:0">发送测试邮件</button>
-      <p id="cfg-status" style="font-size:12px;color:#aaa;margin-top:8px"></p>
+      <div class="form-row"><label>冷却时间（秒）</label><input type="number" id="cfg-cooldown" class="form-input" value="60"></div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-green" style="flex:1" onclick="saveEmail()">保存邮件配置</button>
+        <button class="btn btn-blue" style="flex:1" onclick="testEmail()">发送测试</button>
+      </div>
     </div>
-    <div class="card" style="flex:1;min-width:280px;max-width:380px">
-      <h3>系统信息</h3>
-      <div class="stat-row"><span>引擎</span><span class="stat-val">Rust + nokhwa</span></div>
-      <div class="stat-row"><span>运动侦测</span><span class="stat-val">帧差算法</span></div>
-      <div class="stat-row"><span>视频格式</span><span class="stat-val">MJPEG AVI</span></div>
-      <div class="stat-row"><span>版本</span><span class="stat-val">2.0.0</span></div>
-    </div>
+
   </div>
+
+  <!-- 右列 -->
+  <div class="settings-col">
+
+    <!-- Telegram -->
+    <div class="card">
+      <div class="section-title">✈️ Telegram</div>
+      <div class="toggle-row"><span class="toggle-label">启用</span><label class="switch"><input type="checkbox" id="tg-enabled"><span class="slider"></span></label></div>
+      <div class="form-row"><label>Bot Token</label><input type="text" id="tg-token" class="form-input" placeholder="从 @BotFather 获取"></div>
+      <div class="form-row"><label>Chat ID</label><input type="text" id="tg-chat" class="form-input" placeholder="用户/群组 ID"></div>
+      <div class="toggle-row"><span class="toggle-label">发送图片</span><label class="switch"><input type="checkbox" id="tg-photo" checked><span class="slider"></span></label></div>
+    </div>
+
+    <!-- 钉钉 -->
+    <div class="card">
+      <div class="section-title">🔔 钉钉机器人</div>
+      <div class="toggle-row"><span class="toggle-label">启用</span><label class="switch"><input type="checkbox" id="dd-enabled"><span class="slider"></span></label></div>
+      <div class="form-row"><label>Webhook URL</label><input type="text" id="dd-url" class="form-input" placeholder="https://oapi.dingtalk.com/robot/send?..."></div>
+      <div class="form-row"><label>加签密钥（可选）</label><input type="text" id="dd-secret" class="form-input" placeholder="SEC..."></div>
+    </div>
+
+    <!-- 企业微信 -->
+    <div class="card">
+      <div class="section-title">💬 企业微信机器人</div>
+      <div class="toggle-row"><span class="toggle-label">启用</span><label class="switch"><input type="checkbox" id="wc-enabled"><span class="slider"></span></label></div>
+      <div class="form-row"><label>Webhook URL</label><input type="text" id="wc-url" class="form-input" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."></div>
+    </div>
+
+    <!-- Server酱 -->
+    <div class="card">
+      <div class="section-title">📱 Server酱（微信推送）</div>
+      <div class="toggle-row"><span class="toggle-label">启用</span><label class="switch"><input type="checkbox" id="sc-enabled"><span class="slider"></span></label></div>
+      <div class="form-row"><label>SendKey</label><input type="text" id="sc-key" class="form-input" placeholder="在 sct.ftqq.com 获取"></div>
+    </div>
+
+    <!-- Bark -->
+    <div class="card">
+      <div class="section-title">🍎 Bark（iOS 推送）</div>
+      <div class="toggle-row"><span class="toggle-label">启用</span><label class="switch"><input type="checkbox" id="bk-enabled"><span class="slider"></span></label></div>
+      <div class="form-row"><label>Server URL</label><input type="text" id="bk-url" class="form-input" placeholder="https://api.day.app/你的Key"></div>
+      <div class="form-row"><label>通知音效</label><input type="text" id="bk-sound" class="form-input" placeholder="alarm（留空=默认）"></div>
+      <div class="form-row"><label>通知分组</label><input type="text" id="bk-group" class="form-input" placeholder="摄像头告警"></div>
+    </div>
+
+    <!-- PushPlus -->
+    <div class="card">
+      <div class="section-title">🔔 PushPlus</div>
+      <div class="toggle-row"><span class="toggle-label">启用</span><label class="switch"><input type="checkbox" id="pp-enabled"><span class="slider"></span></label></div>
+      <div class="form-row"><label>Token</label><input type="text" id="pp-token" class="form-input" placeholder="在 pushplus.plus 获取"></div>
+      <div class="form-row"><label>群组 Topic（可选）</label><input type="text" id="pp-topic" class="form-input"></div>
+    </div>
+
+    <!-- Webhook -->
+    <div class="card">
+      <div class="section-title">🔗 通用 Webhook</div>
+      <div class="toggle-row"><span class="toggle-label">启用</span><label class="switch"><input type="checkbox" id="wh-enabled"><span class="slider"></span></label></div>
+      <div class="form-row"><label>URL</label><input type="text" id="wh-url" class="form-input" placeholder="https://your-server.com/hook"></div>
+      <div class="form-row"><label>Body 模板（JSON，留空=默认）</label><input type="text" id="wh-body" class="form-input" placeholder='{"event":"{event}","count":"{count}","image":"{image_url}"}'></div>
+    </div>
+
+    <!-- 通知操作 -->
+    <div class="card">
+      <button class="btn btn-green" onclick="saveNotify()">保存所有通知配置</button>
+      <button class="btn btn-blue" onclick="testNotify()" style="margin-top:6px">发送测试通知（所有渠道）</button>
+      <p id="notify-status" class="status-ok" style="display:none"></p>
+    </div>
+
+    <!-- 系统信息 -->
+    <div class="card">
+      <div class="section-title">ℹ️ 系统信息</div>
+      <div class="stat-row"><span>引擎</span><span class="stat-val">Rust + nokhwa</span></div>
+      <div class="stat-row"><span>通知渠道</span><span class="stat-val">7 种</span></div>
+      <div class="stat-row"><span>云存储</span><span class="stat-val">OneDrive</span></div>
+      <div class="stat-row"><span>版本</span><span class="stat-val">3.0.0</span></div>
+    </div>
+
+  </div>
+</div>
 </div>
 
 <div id="toast"></div>
@@ -236,96 +321,61 @@ function showPage(n){
 function toast(msg,color='#0d7377'){
   const el=document.getElementById('toast');
   el.style.background=color;el.textContent=msg;
-  el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2500);
+  el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2800);
 }
 function api(url){return fetch(url).then(r=>r.json());}
 
+// 摄像头
 function loadCameras(){
   fetch('/cameras').then(r=>r.json()).then(cams=>{
     const sel=document.getElementById('camera-select');
-    if(!cams.length){
-      sel.innerHTML='<option value="0">摄像头 0</option><option value="1">摄像头 1</option>';
-      return;
-    }
+    if(!cams.length){sel.innerHTML='<option value="0">摄像头 0</option><option value="1">摄像头 1</option>';return;}
     sel.innerHTML=cams.map(c=>`<option value="${c.index}">${c.index}: ${c.name}</option>`).join('');
-  }).catch(()=>{
-    document.getElementById('camera-select').innerHTML=
-      '<option value="0">摄像头 0</option><option value="1">摄像头 1</option>';
-  });
+  }).catch(()=>{document.getElementById('camera-select').innerHTML='<option value="0">摄像头 0</option><option value="1">摄像头 1</option>';});
+}
+function switchCamera(i){if(i==='')return;api('/switch_camera?index='+i).then(d=>d.ok&&toast('已切换到摄像头 '+i));}
+
+// 图像调节
+function updateImg(p,v,lid){
+  document.getElementById(lid).textContent=v;
+  clearTimeout(imgDebounce[p]);
+  imgDebounce[p]=setTimeout(()=>api('/set_image?'+p+'='+v),300);
 }
 
-function switchCamera(index){
-  if(index==='')return;
-  api('/switch_camera?index='+index).then(d=>{
-    if(d.ok)toast('已切换到摄像头 '+index);
-    else toast('切换失败','#e94560');
-  });
-}
-
-function updateImg(param,val,labelId){
-  document.getElementById(labelId).textContent=val;
-  clearTimeout(imgDebounce[param]);
-  imgDebounce[param]=setTimeout(()=>api('/set_image?'+param+'='+val),300);
-}
-
-function takePhoto(){
-  api('/photo').then(d=>{
-    if(d.ok){photoCount++;document.getElementById('st-photo').textContent=photoCount;toast('截图已保存');}
-    else toast('截图失败','#e94560');
-  });
-}
-
+// 拍照/录像
+function takePhoto(){api('/photo').then(d=>{if(d.ok){photoCount++;document.getElementById('st-photo').textContent=photoCount;toast('截图已保存');}else toast('截图失败','#e94560');});}
 function toggleRecord(){
   api('/record').then(d=>{
     recording=d.recording;
     const btn=document.getElementById('rec-btn'),badge=document.getElementById('rec-badge');
-    if(recording){
-      btn.textContent='停止录像';btn.className='btn btn-red';
-      badge.classList.add('show');recStart=Date.now();
-      recTimer=setInterval(updateRecTime,1000);toast('开始录像');
-    }else{
-      btn.textContent='开始录像';btn.className='btn btn-green';
-      badge.classList.remove('show');clearInterval(recTimer);
-      document.getElementById('st-rec').textContent='00:00';toast('录像已保存');
-    }
+    if(recording){btn.textContent='停止录像';btn.className='btn btn-red';badge.classList.add('show');recStart=Date.now();recTimer=setInterval(updateRecTime,1000);toast('开始录像');}
+    else{btn.textContent='开始录像';btn.className='btn btn-green';badge.classList.remove('show');clearInterval(recTimer);document.getElementById('st-rec').textContent='00:00';toast('录像已保存');}
   });
 }
-function updateRecTime(){
-  const s=Math.floor((Date.now()-recStart)/1000);
-  document.getElementById('st-rec').textContent=
-    String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
-}
-function toggle(name,on){
-  api('/toggle?name='+name+'&on='+(on?1:0)).then(()=>toast(name+(on?' 已开启':' 已关闭')));
-}
+function updateRecTime(){const s=Math.floor((Date.now()-recStart)/1000);document.getElementById('st-rec').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');}
+function toggle(name,on){api('/toggle?name='+name+'&on='+(on?1:0)).then(()=>toast(name+(on?' 已开启':' 已关闭')));}
 
+// 统计
 setInterval(()=>{
   fetch('/stats').then(r=>r.json()).then(d=>{
     document.getElementById('st-res').textContent=d.resolution;
     document.getElementById('st-motion').textContent=d.motion_count;
     document.getElementById('st-cam').textContent=d.camera_idx;
-    if(d.motion_now){
-      const ma=document.getElementById('motion-alert');
-      ma.style.display='block';setTimeout(()=>ma.style.display='none',1500);
-    }
+    if(d.motion_now){const ma=document.getElementById('motion-alert');ma.style.display='block';setTimeout(()=>ma.style.display='none',1500);}
     const sel=document.getElementById('camera-select');
     if(sel.options.length>1&&sel.value!==String(d.camera_idx))sel.value=String(d.camera_idx);
   });
 },1000);
 setInterval(()=>document.getElementById('clock').textContent=new Date().toLocaleString('zh-CN'),1000);
 
+// WebSocket
 function connectWs(){
   const ws=new WebSocket('ws://'+location.host+'/ws');
-  ws.onmessage=e=>{
-    try{
-      const d=JSON.parse(e.data);
-      if(d.event==='motion')toast('⚠️ 检测到移动！','#e94560');
-      if(d.event==='camera_switched')toast('摄像头已切换到 '+d.index);
-    }catch(_){}
-  };
+  ws.onmessage=e=>{try{const d=JSON.parse(e.data);if(d.event==='motion')toast('⚠️ 检测到移动！','#e94560');if(d.event==='camera_switched')toast('摄像头已切换到 '+d.index);}catch(_){}};
   ws.onclose=()=>setTimeout(connectWs,3000);
 }
 
+// 文件管理
 const TYPES=['photos','videos','motion','auto','alerts'];
 function loadGallery(type){
   TYPES.forEach(t=>document.getElementById('tab-'+t)?.classList.toggle('active',t===type));
@@ -337,42 +387,105 @@ function loadGallery(type){
     d.files.forEach(f=>{
       const isVid=f.endsWith('.avi')||f.endsWith('.mp4');
       const div=document.createElement('div');div.className='gallery-item';
-      div.innerHTML=(isVid?`<video controls><source src="/file/${type}/${f}"></video>`
-        :`<img src="/file/${type}/${f}" onclick="window.open(this.src)">`)
-        +`<div class="item-name">${f}</div>
-          <div class="item-actions">
-            <a href="/file/${type}/${f}" download class="item-btn item-btn-dl">下载</a>
-            <button class="item-btn item-btn-del" onclick="delFile('${type}','${f}',this.closest('.gallery-item'))">删除</button>
-          </div>`;
+      div.innerHTML=(isVid?`<video controls><source src="/file/${type}/${f}"></video>`:`<img src="/file/${type}/${f}" onclick="window.open(this.src)">`)
+        +`<div class="item-name">${f}</div><div class="item-actions"><a href="/file/${type}/${f}" download class="item-btn item-btn-dl">下载</a><button class="item-btn item-btn-del" onclick="delFile('${type}','${f}',this.closest('.gallery-item'))">删除</button></div>`;
       grid.appendChild(div);
     });
   });
 }
 function delFile(type,name,el){
   if(!confirm('确认删除 '+name+'?'))return;
-  fetch('/delete?type='+type+'&name='+encodeURIComponent(name),{method:'POST'})
-    .then(r=>r.json()).then(d=>{if(d.ok){el.remove();toast('已删除');}else toast('删除失败','#e94560');});
+  fetch('/delete?type='+type+'&name='+encodeURIComponent(name),{method:'POST'}).then(r=>r.json()).then(d=>{if(d.ok){el.remove();toast('已删除');}else toast('删除失败','#e94560');});
 }
-function saveCfg(){
-  fetch('/save_config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-    email_enabled:document.getElementById('cfg-email-on').checked,
-    smtp_host:document.getElementById('cfg-smtp-host').value,
-    smtp_port:parseInt(document.getElementById('cfg-smtp-port').value),
-    email_from:document.getElementById('cfg-email-from').value,
-    email_password:document.getElementById('cfg-email-pass').value,
-    email_to:document.getElementById('cfg-email-to').value,
-    cooldown:parseInt(document.getElementById('cfg-cooldown').value),
-    on_motion:document.getElementById('cfg-on-motion').checked,
-    on_unknown:false
-  })}).then(r=>r.json()).then(d=>{
-    if(d.ok){document.getElementById('cfg-status').textContent='已保存';toast('设置已保存');}
+
+// ===== 设置页 =====
+function loadSettings(){
+  // 加载通知配置
+  fetch('/notify_config').then(r=>r.json()).then(c=>{
+    setChk('tg-enabled',c.telegram?.enabled);setVal('tg-token',c.telegram?.bot_token);setVal('tg-chat',c.telegram?.chat_id);setChk('tg-photo',c.telegram?.send_photo??true);
+    setChk('dd-enabled',c.dingtalk?.enabled);setVal('dd-url',c.dingtalk?.webhook_url);setVal('dd-secret',c.dingtalk?.secret);
+    setChk('wc-enabled',c.wecom?.enabled);setVal('wc-url',c.wecom?.webhook_url);
+    setChk('sc-enabled',c.serverchan?.enabled);setVal('sc-key',c.serverchan?.send_key);
+    setChk('bk-enabled',c.bark?.enabled);setVal('bk-url',c.bark?.server_url);setVal('bk-sound',c.bark?.sound);setVal('bk-group',c.bark?.group);
+    setChk('pp-enabled',c.pushplus?.enabled);setVal('pp-token',c.pushplus?.token);setVal('pp-topic',c.pushplus?.topic);
+    setChk('wh-enabled',c.webhook?.enabled);setVal('wh-url',c.webhook?.url);setVal('wh-body',c.webhook?.body_template);
+  });
+  // 加载 OneDrive 配置
+  fetch('/onedrive_config').then(r=>r.json()).then(c=>{
+    setVal('od-key',c.maton_api_key);setVal('od-folder',c.folder||'camera_rs');
+    setChk('od-enabled',c.enabled);setChk('od-motion',c.upload_motion??true);
+    setChk('od-photos',c.upload_photos??true);setChk('od-videos',c.upload_videos);
+    setChk('od-share',c.create_share_links??true);setVal('od-share-url',c.share_folder_url);
   });
 }
+function setVal(id,v){const el=document.getElementById(id);if(el&&v!=null)el.value=v;}
+function setChk(id,v){const el=document.getElementById(id);if(el&&v!=null)el.checked=!!v;}
+function getChk(id){return document.getElementById(id)?.checked??false;}
+function getVal(id){return document.getElementById(id)?.value??'';}
+
+function saveNotify(){
+  const cfg={
+    telegram:{enabled:getChk('tg-enabled'),bot_token:getVal('tg-token'),chat_id:getVal('tg-chat'),send_photo:getChk('tg-photo')},
+    dingtalk:{enabled:getChk('dd-enabled'),webhook_url:getVal('dd-url'),secret:getVal('dd-secret')},
+    wecom:{enabled:getChk('wc-enabled'),webhook_url:getVal('wc-url')},
+    serverchan:{enabled:getChk('sc-enabled'),send_key:getVal('sc-key')},
+    bark:{enabled:getChk('bk-enabled'),server_url:getVal('bk-url'),sound:getVal('bk-sound'),group:getVal('bk-group'),icon:''},
+    pushplus:{enabled:getChk('pp-enabled'),token:getVal('pp-token'),topic:getVal('pp-topic')},
+    webhook:{enabled:getChk('wh-enabled'),url:getVal('wh-url'),body_template:getVal('wh-body')}
+  };
+  fetch('/notify_config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)})
+    .then(r=>r.json()).then(d=>{
+      const el=document.getElementById('notify-status');
+      el.textContent=d.ok?'✅ 已保存':'❌ 保存失败';
+      el.className=d.ok?'status-ok':'status-err';
+      el.style.display='block';
+      if(d.ok)toast('通知配置已保存');
+    });
+}
+
+function testNotify(){
+  fetch('/test_notify').then(r=>r.json()).then(d=>toast(d.ok?'测试通知已发送到所有已启用渠道':'发送失败'));
+}
+
+function saveOneDrive(){
+  const cfg={
+    enabled:getChk('od-enabled'),maton_api_key:getVal('od-key'),folder:getVal('od-folder'),
+    upload_photos:getChk('od-photos'),upload_motion:getChk('od-motion'),upload_videos:getChk('od-videos'),
+    create_share_links:getChk('od-share'),share_folder_url:getVal('od-share-url')
+  };
+  fetch('/onedrive_config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)})
+    .then(r=>r.json()).then(d=>{
+      const el=document.getElementById('od-status');
+      el.textContent=d.ok?'✅ 已保存':'❌ 保存失败';
+      el.className=d.ok?'status-ok':'status-err';
+      el.style.display='block';
+      if(d.ok)toast('OneDrive 配置已保存');
+    });
+}
+
+function createShare(){
+  toast('正在生成分享链接...');
+  fetch('/onedrive_share').then(r=>r.json()).then(d=>{
+    if(d.ok){setVal('od-share-url',d.url);toast('文件夹分享链接已生成');}
+    else toast(d.error||'生成失败，请检查配置','#e94560');
+  });
+}
+
+function saveEmail(){
+  fetch('/save_config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    email_enabled:getChk('cfg-email-on'),smtp_host:getVal('cfg-smtp-host'),
+    smtp_port:parseInt(getVal('cfg-smtp-port')),email_from:getVal('cfg-email-from'),
+    email_password:getVal('cfg-email-pass'),email_to:getVal('cfg-email-to'),
+    cooldown:parseInt(getVal('cfg-cooldown')||'60'),on_motion:true,on_unknown:false
+  })}).then(r=>r.json()).then(d=>{if(d.ok)toast('邮件配置已保存');});
+}
+
 function testEmail(){
   fetch('/test_email').then(r=>r.json()).then(d=>{
     if(d.ok)toast('测试邮件已发送');else toast('发送失败: '+d.error,'#e94560');
   });
 }
+
 loadCameras();
 connectWs();
 </script></body></html>"#;
