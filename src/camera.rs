@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use image::{DynamicImage, ImageBuffer, Rgb, imageops};
-use crate::state::{AppState, ImageSettings};
+use crate::state::{AppState, ImageSettings, MotionZone};
 use crate::motion;
 
 // ============================================================
@@ -192,21 +192,62 @@ fn tiny_font() -> std::collections::HashMap<char, [u8; 8]> {
 }
 
 // ============================================================
-//  捕获循环（支持摄像头热切换）
+//  运动区域过滤
 // ============================================================
 
+/// 将 RGB 帧中区域外的像素置灰，只保留检测区域内的变化
+pub fn apply_motion_zones(rgb: &mut [u8], width: u32, height: u32, zones: &[MotionZone]) {
+    if zones.is_empty() { return; }
+    let (w, h) = (width as usize, height as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let fx = x as f32 / w as f32;
+            let fy = y as f32 / h as f32;
+            let in_zone = zones.iter().any(|z| fx >= z.x1 && fx <= z.x2 && fy >= z.y1 && fy <= z.y2);
+            if !in_zone {
+                let b = (y * w + x) * 3;
+                // 置为灰色，消除区域外的运动
+                let avg = ((rgb[b] as u32 + rgb[b+1] as u32 + rgb[b+2] as u32) / 3) as u8;
+                rgb[b] = avg; rgb[b+1] = avg; rgb[b+2] = avg;
+            }
+        }
+    }
+}
+
+// ============================================================
+//  捕获循环（支持摄像头热切换 + 多摄像头独立流）
+// ============================================================
+
+/// 单摄像头捕获循环（每个摄像头各启动一个）
 pub async fn capture_loop(state: AppState) {
     tokio::task::spawn_blocking(move || {
         run_nokhwa_loop(state);
     }).await.ok();
 }
 
+/// 为指定索引的摄像头单独启动捕获（多摄同时预览）
+pub async fn capture_loop_for(state: AppState, idx: usize) {
+    let s = state.clone();
+    tokio::task::spawn_blocking(move || run_nokhwa_loop_idx(s, idx)).await.ok();
+}
+
 fn run_nokhwa_loop(state: AppState) {
+    let idx = state.camera_idx.load(Ordering::Relaxed);
+    run_nokhwa_loop_idx(state, idx);
+}
+
+fn run_nokhwa_loop_idx(state: AppState, fixed_idx: usize) {
     use nokhwa::{Camera, utils::{CameraIndex, RequestedFormat, RequestedFormatType}};
     use nokhwa::pixel_format::RgbFormat;
 
     loop {
-        let target_idx = state.camera_idx.load(Ordering::Relaxed);
+        // fixed_idx: 独立流模式固定不变；主流模式跟随 camera_idx
+        let target_idx = if fixed_idx == usize::MAX {
+            state.camera_idx.load(Ordering::Relaxed)
+        } else {
+            fixed_idx
+        };
+        let is_primary = fixed_idx == usize::MAX || fixed_idx == state.camera_idx.load(Ordering::Relaxed);
         let index = CameraIndex::Index(target_idx as u32);
         let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
 
@@ -227,11 +268,21 @@ fn run_nokhwa_loop(state: AppState) {
 
         let fmt = camera.camera_format();
         let (cam_w, cam_h) = (fmt.width(), fmt.height());
-        state.camera.lock().resolution = (cam_w, cam_h);
+        if is_primary { state.camera.lock().resolution = (cam_w, cam_h); }
         tracing::info!("摄像头 {} 就绪 {}x{}", target_idx, cam_w, cam_h);
 
+        // 注册帧通道
+        {
+            let mut txs = state.frame_txs.lock();
+            if !txs.contains_key(&target_idx) {
+                let (tx, _) = tokio::sync::broadcast::channel(4);
+                txs.insert(target_idx, tx);
+            }
+        }
+
         loop {
-            if state.camera_idx.load(Ordering::Relaxed) != target_idx {
+            // 主流模式：检测切换请求
+            if fixed_idx == usize::MAX && state.camera_idx.load(Ordering::Relaxed) != target_idx {
                 let _ = camera.stop_stream();
                 tracing::info!("检测到摄像头切换请求，重新初始化...");
                 break;
@@ -257,7 +308,30 @@ fn run_nokhwa_loop(state: AppState) {
             let img_settings = state.image_settings.lock().clone();
             apply_image_settings(&mut rgb, &mut w, &mut h, &img_settings);
 
-            process_and_broadcast(&state, &mut rgb, w, h);
+            // 更新帧通道（多摄像头分流）
+            let jpeg_for_stream = encode_jpeg(&rgb, w, h, 75);
+            let arc_stream = Arc::new(jpeg_for_stream);
+            {
+                let txs = state.frame_txs.lock();
+                if let Some(tx) = txs.get(&target_idx) { let _ = tx.send(arc_stream.clone()); }
+            }
+
+            // 主流处理（运动检测、录像等）
+            if is_primary {
+                process_and_broadcast(&state, &mut rgb, w, h, target_idx);
+            }
+
+            // 更新 FPS
+            {
+                let mut cam = state.camera.lock();
+                cam.fps_frame_count += 1;
+                let elapsed = cam.fps_last_ts.elapsed().as_secs_f32();
+                if elapsed >= 1.0 {
+                    cam.fps_current = cam.fps_frame_count as f32 / elapsed;
+                    cam.fps_frame_count = 0;
+                    cam.fps_last_ts = std::time::Instant::now();
+                }
+            }
         }
     }
 }
@@ -277,15 +351,22 @@ fn run_placeholder_briefly(state: &AppState, expected_idx: usize) {
     }
 }
 
-fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32) {
+fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32, cam_idx: usize) {
     let (sensitivity, min_area, motion_detect) = {
         let cam = state.camera.lock();
         (cam.sensitivity, cam.min_area, cam.motion_detect)
     };
     let prev_gray = state.camera.lock().prev_gray.clone();
 
+    // 应用运动检测区域
+    let zones = state.motion_zones.lock().clone();
+    let mut rgb_for_motion = rgb.clone();
+    if !zones.is_empty() {
+        apply_motion_zones(&mut rgb_for_motion, w, h, &zones);
+    }
+
     let (_, detected, new_gray) = if motion_detect {
-        motion::detect_motion(rgb, w, h, &prev_gray, sensitivity, min_area)
+        motion::detect_motion(&rgb_for_motion, w, h, &prev_gray, sensitivity, min_area)
     } else {
         let g = motion::to_grayscale(rgb, w, h);
         (vec![], false, g)
@@ -326,29 +407,39 @@ fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32) {
                 let msg = serde_json::json!({"event":"motion","count":cam.motion_count}).to_string();
                 state.ws_tx.send(msg).ok();
 
-                // 异步：OneDrive 上传 + 多渠道通知
-                let notify_cfg   = state.notify_cfg.lock().clone();
-                let onedrive_cfg = state.onedrive_cfg.lock().clone();
-                let jpeg_copy    = jpeg.clone();
-                let filename     = format!("motion/{}.jpg", ts_str());
-                let count        = cam.motion_count;
-                tokio::spawn(async move {
-                    // 1. 上传到 OneDrive，获取分享链接
-                    let share_url = if onedrive_cfg.upload_motion {
-                        crate::upload::upload_file(
-                            &onedrive_cfg, &filename, &jpeg_copy, "image/jpeg"
-                        ).await
-                    } else { None };
-                    // 2. 发送所有通知渠道
-                    crate::notify::send_all(
-                        &notify_cfg,
-                        crate::notify::NotifyEvent::Motion {
-                            count,
-                            image: &jpeg_copy,
-                            image_url: share_url.as_deref(),
-                        }
-                    ).await;
-                });
+                // 记录事件日志
+                {
+                    let evt = crate::events::Event::new(
+                        0, crate::events::EventKind::Motion, cam_idx,
+                        format!("检测到移动 #{}", cam.motion_count)
+                    ).with_thumb(format!("motion/{}.jpg", ts_str()));
+                    state.event_log.log(evt);
+                }
+
+                // 异步：上传 + 多渠道通知（检查告警时间规则）
+                if state.alert_allowed() {
+                    let notify_cfg   = state.notify_cfg.lock().clone();
+                    let od_cfg       = state.onedrive_cfg.lock().clone();
+                    let gd_cfg       = state.gdrive_cfg.lock().clone();
+                    let ftp_cfg      = state.ftp_cfg.lock().clone();
+                    let jpeg_copy    = jpeg.clone();
+                    let filename     = format!("motion/{}.jpg", ts_str());
+                    let count        = cam.motion_count;
+                    tokio::spawn(async move {
+                        let share_url = crate::upload::upload_all(
+                            &od_cfg, &gd_cfg, &ftp_cfg,
+                            &filename, &jpeg_copy,
+                            crate::upload::UploadKind::Motion,
+                        ).await;
+                        crate::notify::send_all(
+                            &notify_cfg,
+                            crate::notify::NotifyEvent::Motion {
+                                count, image: &jpeg_copy,
+                                image_url: share_url.as_deref(),
+                            }
+                        ).await;
+                    });
+                }
             }
         }
 
