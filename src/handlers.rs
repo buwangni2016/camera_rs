@@ -606,8 +606,7 @@ pub async fn create_onedrive_share(
 }
 
 pub async fn upload_now(
-    State(state): State<AppState>,
-    jar: PrivateCookieJar,
+    State(state): State<AppState>, jar: PrivateCookieJar,
 ) -> Json<OkResp> {
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
         return Json(OkResp { ok: false, error: Some("Unauthorized".into()) });
@@ -615,13 +614,380 @@ pub async fn upload_now(
     let jpeg = state.camera.lock().latest_jpeg.clone();
     match jpeg {
         Some(j) => {
-            let cfg = state.onedrive_cfg.lock().clone();
-            let filename = format!("photos/{}.jpg", ts_str());
+            let od = state.onedrive_cfg.lock().clone();
+            let gd = state.gdrive_cfg.lock().clone();
+            let ft = state.ftp_cfg.lock().clone();
+            let fname = format!("photos/{}.jpg", ts_str());
             tokio::spawn(async move {
-                crate::upload::upload_file(&cfg, &filename, &j, "image/jpeg").await;
+                crate::upload::upload_all(&od, &gd, &ft, &fname, &j, crate::upload::UploadKind::Photo).await;
             });
             Json(OkResp { ok: true, error: None })
         }
         None => Json(OkResp { ok: false, error: Some("无帧数据".into()) }),
     }
 }
+
+// ============================================================
+//  Google Drive & FTP 配置
+// ============================================================
+
+pub async fn get_gdrive_config(State(s): State<AppState>, jar: PrivateCookieJar) -> Json<crate::upload::GoogleDriveConfig> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(Default::default()); }
+    Json(s.gdrive_cfg.lock().clone())
+}
+pub async fn save_gdrive_config(State(s): State<AppState>, jar: PrivateCookieJar, Json(c): Json<crate::upload::GoogleDriveConfig>) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    *s.gdrive_cfg.lock() = c;
+    Json(OkResp { ok: true, error: None })
+}
+
+pub async fn get_ftp_config(State(s): State<AppState>, jar: PrivateCookieJar) -> Json<crate::upload::FtpConfig> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(Default::default()); }
+    Json(s.ftp_cfg.lock().clone())
+}
+pub async fn save_ftp_config(State(s): State<AppState>, jar: PrivateCookieJar, Json(c): Json<crate::upload::FtpConfig>) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    *s.ftp_cfg.lock() = c;
+    Json(OkResp { ok: true, error: None })
+}
+
+// ============================================================
+//  运动检测区域
+// ============================================================
+
+pub async fn get_motion_zones(State(s): State<AppState>, jar: PrivateCookieJar) -> Json<Vec<crate::state::MotionZone>> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(vec![]); }
+    Json(s.motion_zones.lock().clone())
+}
+pub async fn save_motion_zones(State(s): State<AppState>, jar: PrivateCookieJar, Json(zones): Json<Vec<crate::state::MotionZone>>) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    *s.motion_zones.lock() = zones;
+    Json(OkResp { ok: true, error: None })
+}
+
+// ============================================================
+//  事件日志
+// ============================================================
+
+#[derive(Deserialize, Default)]
+pub struct EventQuery { limit: Option<usize>, kind: Option<String> }
+
+pub async fn get_events(State(s): State<AppState>, Query(q): Query<EventQuery>, jar: PrivateCookieJar) -> Json<serde_json::Value> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(serde_json::json!([])); }
+    let limit = q.limit.unwrap_or(100).min(500);
+    let events = match q.kind.as_deref() {
+        Some(k) => s.event_log.by_kind(k, limit),
+        None    => s.event_log.recent(limit),
+    };
+    Json(serde_json::json!({"events": events, "total": s.event_log.count()}))
+}
+
+pub async fn clear_events(State(s): State<AppState>, jar: PrivateCookieJar) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    s.event_log.clear();
+    Json(OkResp { ok: true, error: None })
+}
+
+// ============================================================
+//  定时任务
+// ============================================================
+
+pub async fn get_schedule(State(s): State<AppState>, jar: PrivateCookieJar) -> Json<Vec<crate::schedule::ScheduleRule>> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(vec![]); }
+    Json(s.schedule_rules.lock().clone())
+}
+pub async fn save_schedule(State(s): State<AppState>, jar: PrivateCookieJar, Json(rules): Json<Vec<crate::schedule::ScheduleRule>>) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    *s.schedule_rules.lock() = rules;
+    Json(OkResp { ok: true, error: None })
+}
+
+// ============================================================
+//  告警时间规则
+// ============================================================
+
+pub async fn get_alert_rule(State(s): State<AppState>, jar: PrivateCookieJar) -> Json<crate::state::AlertTimeRule> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(Default::default()); }
+    Json(s.alert_time_rule.lock().clone())
+}
+pub async fn save_alert_rule(State(s): State<AppState>, jar: PrivateCookieJar, Json(rule): Json<crate::state::AlertTimeRule>) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    *s.alert_time_rule.lock() = rule;
+    Json(OkResp { ok: true, error: None })
+}
+
+// ============================================================
+//  用户管理
+// ============================================================
+
+pub async fn list_users(State(s): State<AppState>, jar: PrivateCookieJar) -> Json<serde_json::Value> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(serde_json::json!([])); }
+    let users: Vec<_> = s.users.lock().iter().map(|u| serde_json::json!({
+        "username": u.username, "role": u.role, "enabled": u.enabled
+    })).collect();
+    Json(serde_json::json!(users))
+}
+
+#[derive(Deserialize)]
+pub struct UserForm { username: String, password: Option<String>, role: String, enabled: bool }
+
+pub async fn save_users(State(s): State<AppState>, jar: PrivateCookieJar, Json(forms): Json<Vec<UserForm>>) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    let mut users = s.users.lock();
+    for form in forms {
+        if let Some(u) = users.iter_mut().find(|u| u.username == form.username) {
+            u.enabled = form.enabled;
+            u.role = if form.role == "admin" { crate::state::UserRole::Admin } else { crate::state::UserRole::Viewer };
+            if let Some(pw) = &form.password { if !pw.is_empty() { u.password_hash = crate::auth::hash_password(pw); } }
+        } else {
+            let pw_hash = form.password.as_deref().map(crate::auth::hash_password).unwrap_or_default();
+            users.push(crate::state::UserAccount {
+                username: form.username, password_hash: pw_hash,
+                role: if form.role == "admin" { crate::state::UserRole::Admin } else { crate::state::UserRole::Viewer },
+                enabled: form.enabled,
+            });
+        }
+    }
+    Json(OkResp { ok: true, error: None })
+}
+
+// ============================================================
+//  API Key 管理
+// ============================================================
+
+pub async fn get_api_config(State(s): State<AppState>, jar: PrivateCookieJar) -> Json<crate::state::ApiConfig> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(Default::default()); }
+    Json(s.api_cfg.lock().clone())
+}
+pub async fn save_api_config(State(s): State<AppState>, jar: PrivateCookieJar, Json(mut c): Json<crate::state::ApiConfig>) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    if c.api_key.is_empty() { c.api_key = crate::auth::generate_api_key(); }
+    *s.api_cfg.lock() = c;
+    Json(OkResp { ok: true, error: None })
+}
+
+// ============================================================
+//  REST API（X-API-Key 认证）
+// ============================================================
+
+fn check_api_key(headers: &axum::http::HeaderMap, state: &AppState) -> bool {
+    let cfg = state.api_cfg.lock();
+    if !cfg.enabled { return false; }
+    headers.get("X-API-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(|k| k == cfg.api_key)
+        .unwrap_or(false)
+}
+
+pub async fn api_snapshot(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    if !check_api_key(&headers, &state) {
+        return (StatusCode::UNAUTHORIZED, "Invalid API Key").into_response();
+    }
+    match state.camera.lock().latest_jpeg.clone() {
+        Some(j) => ([(header::CONTENT_TYPE, "image/jpeg")], j.as_ref().clone()).into_response(),
+        None    => (StatusCode::SERVICE_UNAVAILABLE, "No frame").into_response(),
+    }
+}
+
+pub async fn api_stats(State(state): State<AppState>, headers: axum::http::HeaderMap) -> impl IntoResponse {
+    if !check_api_key(&headers, &state) {
+        return (StatusCode::UNAUTHORIZED, "Invalid API Key").into_response();
+    }
+    let cam = state.camera.lock();
+    Json(serde_json::json!({
+        "resolution": format!("{}x{}", cam.resolution.0, cam.resolution.1),
+        "fps": cam.fps_current,
+        "motion_count": cam.motion_count,
+        "motion_now": cam.motion_now,
+        "recording": cam.recording,
+        "camera_idx": state.camera_idx.load(std::sync::atomic::Ordering::Relaxed),
+    })).into_response()
+}
+
+pub async fn api_events(State(state): State<AppState>, headers: axum::http::HeaderMap) -> impl IntoResponse {
+    if !check_api_key(&headers, &state) {
+        return (StatusCode::UNAUTHORIZED, "Invalid API Key").into_response();
+    }
+    Json(state.event_log.recent(50)).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct TriggerBody { action: String }
+
+pub async fn api_trigger(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<TriggerBody>,
+) -> Json<OkResp> {
+    if !check_api_key(&headers, &state) {
+        return Json(OkResp { ok: false, error: Some("Invalid API Key".into()) });
+    }
+    match body.action.as_str() {
+        "photo"  => { let jpeg = state.camera.lock().latest_jpeg.clone(); if let Some(j) = jpeg { std::fs::write(format!("{}/photos/{}.jpg", crate::SAVE_DIR, ts_str()), &*j).ok(); } }
+        "motion_on"  => { state.camera.lock().motion_detect = true; }
+        "motion_off" => { state.camera.lock().motion_detect = false; }
+        _ => return Json(OkResp { ok: false, error: Some("unknown action".into()) }),
+    }
+    Json(OkResp { ok: true, error: None })
+}
+
+// ============================================================
+//  系统工具
+// ============================================================
+
+pub async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let cam = state.camera.lock();
+    Json(serde_json::json!({
+        "status": "ok",
+        "camera": cam.resolution != (0,0),
+        "fps": cam.fps_current,
+        "uptime": "running",
+        "version": "3.0.0",
+    }))
+}
+
+pub async fn sys_info(State(_): State<AppState>, jar: PrivateCookieJar) -> Json<serde_json::Value> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(serde_json::json!({})); }
+    let mut sys = sysinfo::System::new_all();
+    sys.refresh_all();
+    let disk_total: u64 = sysinfo::Disks::new_with_refreshed_list().iter().map(|d| d.total_space()).sum();
+    let disk_used: u64  = sysinfo::Disks::new_with_refreshed_list().iter().map(|d| d.total_space() - d.available_space()).sum();
+    Json(serde_json::json!({
+        "cpu_usage":  sys.global_cpu_usage(),
+        "mem_total":  sys.total_memory(),
+        "mem_used":   sys.used_memory(),
+        "disk_total": disk_total,
+        "disk_used":  disk_used,
+        "os":         sysinfo::System::os_version().unwrap_or_default(),
+    }))
+}
+
+pub async fn qr_code(State(_): State<AppState>, jar: PrivateCookieJar) -> impl IntoResponse {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    // 获取本机 IP
+    let ip = local_ip().unwrap_or_else(|| "localhost".into());
+    let url = format!("http://{}:5000", ip);
+    let code = qrcode::QrCode::new(url.as_bytes()).unwrap();
+    let svg = code.render::<qrcode::render::svg::Color>().build();
+    ([(header::CONTENT_TYPE, "image/svg+xml")], svg).into_response()
+}
+
+fn local_ip() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    Some(socket.local_addr().ok()?.ip().to_string())
+}
+
+pub async fn pwa_manifest() -> impl IntoResponse {
+    let manifest = serde_json::json!({
+        "name": "摄像头监控系统",
+        "short_name": "Camera RS",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#1a1a2e",
+        "theme_color": "#e94560",
+        "description": "Rust 摄像头监控系统",
+        "icons": [
+            {"src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📷</text></svg>", "type": "image/svg+xml", "sizes": "any"}
+        ]
+    });
+    ([(header::CONTENT_TYPE, "application/manifest+json")], manifest.to_string()).into_response()
+}
+
+pub async fn export_config(State(state): State<AppState>, jar: PrivateCookieJar) -> impl IntoResponse {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let export = serde_json::json!({
+        "notify":   *state.notify_cfg.lock(),
+        "onedrive": *state.onedrive_cfg.lock(),
+        "gdrive":   *state.gdrive_cfg.lock(),
+        "ftp":      *state.ftp_cfg.lock(),
+        "schedule": *state.schedule_rules.lock(),
+        "alert_rule": *state.alert_time_rule.lock(),
+        "motion_zones": *state.motion_zones.lock(),
+        "image_settings": *state.image_settings.lock(),
+    });
+    let json = serde_json::to_string_pretty(&export).unwrap_or_default();
+    ([(header::CONTENT_TYPE, "application/json"),
+      (header::CONTENT_DISPOSITION, "attachment; filename=camera_rs_config.json")],
+     json).into_response()
+}
+
+pub async fn import_config(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    Json(data): Json<serde_json::Value>,
+) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    if let Some(v) = data.get("notify") { if let Ok(c) = serde_json::from_value(v.clone()) { *state.notify_cfg.lock() = c; } }
+    if let Some(v) = data.get("onedrive") { if let Ok(c) = serde_json::from_value(v.clone()) { *state.onedrive_cfg.lock() = c; } }
+    if let Some(v) = data.get("gdrive")   { if let Ok(c) = serde_json::from_value(v.clone()) { *state.gdrive_cfg.lock() = c; } }
+    if let Some(v) = data.get("ftp")      { if let Ok(c) = serde_json::from_value(v.clone()) { *state.ftp_cfg.lock() = c; } }
+    if let Some(v) = data.get("schedule") { if let Ok(r) = serde_json::from_value(v.clone()) { *state.schedule_rules.lock() = r; } }
+    if let Some(v) = data.get("alert_rule") { if let Ok(r) = serde_json::from_value(v.clone()) { *state.alert_time_rule.lock() = r; } }
+    if let Some(v) = data.get("motion_zones") { if let Ok(z) = serde_json::from_value(v.clone()) { *state.motion_zones.lock() = z; } }
+    Json(OkResp { ok: true, error: None })
+}
+
+// ============================================================
+//  延时摄影
+// ============================================================
+
+pub async fn get_timelapse_cfg(State(s): State<AppState>, jar: PrivateCookieJar) -> Json<crate::state::TimelapseConfig> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(Default::default()); }
+    Json(s.timelapse_cfg.lock().clone())
+}
+pub async fn save_timelapse_cfg(State(s): State<AppState>, jar: PrivateCookieJar, Json(c): Json<crate::state::TimelapseConfig>) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    *s.timelapse_cfg.lock() = c;
+    Json(OkResp { ok: true, error: None })
+}
+
+pub async fn build_timelapse(State(state): State<AppState>, jar: PrivateCookieJar) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    let cfg = state.timelapse_cfg.lock().clone();
+    tokio::task::spawn_blocking(move || {
+        build_timelapse_avi(&cfg).unwrap_or_else(|e| tracing::warn!("延时摄影生成失败: {}", e));
+    });
+    Json(OkResp { ok: true, error: None })
+}
+
+fn build_timelapse_avi(cfg: &crate::state::TimelapseConfig) -> anyhow::Result<()> {
+    let dir = format!("{}/auto", crate::SAVE_DIR);
+    let mut files: Vec<_> = std::fs::read_dir(&dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".jpg"))
+        .collect();
+    files.sort_by_key(|e| e.file_name());
+    let max = cfg.max_frames as usize;
+    if files.len() > max { files.drain(0..files.len()-max); }
+
+    let frames: Vec<Vec<u8>> = files.iter()
+        .filter_map(|e| std::fs::read(e.path()).ok())
+        .collect();
+
+    if frames.is_empty() { return Ok(()); }
+    let path = format!("{}/timelapse/{}.avi", crate::SAVE_DIR, chrono::Local::now().format("%Y%m%d_%H%M%S"));
+    crate::camera::save_mjpeg_avi(&frames, cfg.fps as f64, &path)?;
+    tracing::info!("延时摄影生成: {} 帧 -> {}", frames.len(), path);
+    Ok(())
+}
+
+// ============================================================
+//  多摄像头分屏页
+// ============================================================
+
+pub async fn multiview_page(_: State<AppState>, jar: PrivateCookieJar) -> impl IntoResponse {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return axum::response::Redirect::to("/login").into_response();
+    }
+    Html(crate::html::MULTIVIEW_HTML).into_response()
+}
+
+use sysinfo;
