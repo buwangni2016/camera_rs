@@ -518,3 +518,110 @@ pub async fn test_email_route(State(state): State<AppState>, jar: PrivateCookieJ
         Err(e) => Json(OkResp { ok: false, error: Some(e) }),
     }
 }
+
+// ============================================================
+//  通知渠道配置
+// ============================================================
+
+pub async fn save_notify_config(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    Json(cfg): Json<crate::notify::NotifyConfig>,
+) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return Json(OkResp { ok: false, error: Some("Unauthorized".into()) });
+    }
+    *state.notify_cfg.lock() = cfg;
+    Json(OkResp { ok: true, error: None })
+}
+
+pub async fn get_notify_config(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+) -> Json<crate::notify::NotifyConfig> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return Json(crate::notify::NotifyConfig::default());
+    }
+    Json(state.notify_cfg.lock().clone())
+}
+
+pub async fn test_notify(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return Json(OkResp { ok: false, error: Some("Unauthorized".into()) });
+    }
+    let cfg = state.notify_cfg.lock().clone();
+    tokio::spawn(async move {
+        crate::notify::send_all(&cfg, crate::notify::NotifyEvent::Custom {
+            title: "🔔 通知测试",
+            body:  "摄像头监控系统通知渠道测试成功！",
+        }).await;
+    });
+    Json(OkResp { ok: true, error: None })
+}
+
+// ============================================================
+//  OneDrive 配置
+// ============================================================
+
+pub async fn save_onedrive_config(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    Json(cfg): Json<crate::upload::OneDriveConfig>,
+) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return Json(OkResp { ok: false, error: Some("Unauthorized".into()) });
+    }
+    *state.onedrive_cfg.lock() = cfg;
+    Json(OkResp { ok: true, error: None })
+}
+
+pub async fn get_onedrive_config(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+) -> Json<crate::upload::OneDriveConfig> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return Json(crate::upload::OneDriveConfig::default());
+    }
+    Json(state.onedrive_cfg.lock().clone())
+}
+
+pub async fn create_onedrive_share(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+) -> Json<serde_json::Value> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return Json(serde_json::json!({"ok": false}));
+    }
+    let cfg = state.onedrive_cfg.lock().clone();
+    match crate::upload::create_folder_share(&cfg).await {
+        Some(url) => {
+            state.onedrive_cfg.lock().share_folder_url = url.clone();
+            Json(serde_json::json!({"ok": true, "url": url}))
+        }
+        None => Json(serde_json::json!({"ok": false, "error": "生成失败，请检查 Maton API Key"})),
+    }
+}
+
+pub async fn upload_now(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return Json(OkResp { ok: false, error: Some("Unauthorized".into()) });
+    }
+    let jpeg = state.camera.lock().latest_jpeg.clone();
+    match jpeg {
+        Some(j) => {
+            let cfg = state.onedrive_cfg.lock().clone();
+            let filename = format!("photos/{}.jpg", ts_str());
+            tokio::spawn(async move {
+                crate::upload::upload_file(&cfg, &filename, &j, "image/jpeg").await;
+            });
+            Json(OkResp { ok: true, error: None })
+        }
+        None => Json(OkResp { ok: false, error: Some("无帧数据".into()) }),
+    }
+}
