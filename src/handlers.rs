@@ -1,23 +1,23 @@
 /*!
- * HTTP 请求处理器（axum handlers）
- *
- * 状态：State<AppState>（AppState: Clone，内部 Arc 共享数据）
- * Cookie：PrivateCookieJar（从 AppState::cookie_key 自动提取 Key）
+ * HTTP 请求处理器
  */
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query, State, ConnectInfo},
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
     Json,
 };
+use axum::extract::ws::{WebSocket, WebSocketUpgrade, Message};
 use axum_extra::extract::cookie::{Cookie, PrivateCookieJar};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use std::net::SocketAddr;
 
 use crate::state::AppState;
 use crate::html::{LOGIN_HTML, MAIN_HTML};
@@ -45,24 +45,8 @@ fn ts_str() -> String {
     chrono::Local::now().format("%Y%m%d_%H%M%S").to_string()
 }
 
-macro_rules! require_auth {
-    ($jar:expr) => {
-        if !is_authed(&$jar) && !crate::PASSWORD.is_empty() {
-            return axum::response::Redirect::to("/login").into_response();
-        }
-    };
-}
-
-macro_rules! require_auth_json {
-    ($jar:expr, $t:ty) => {
-        if !is_authed(&$jar) && !crate::PASSWORD.is_empty() {
-            return Json::<$t>(Default::default());
-        }
-    };
-}
-
 // ============================================================
-//  登录 / 登出
+//  登录 / 登出（含失败锁定）
 // ============================================================
 
 pub async fn login_page(
@@ -79,16 +63,42 @@ pub async fn login_page(
 pub struct LoginForm { password: String }
 
 pub async fn login_post(
-    _: State<AppState>,
+    State(state): State<AppState>,
     jar: PrivateCookieJar,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     axum::Form(form): axum::Form<LoginForm>,
 ) -> impl IntoResponse {
+    let ip = addr.ip().to_string();
+    let now = now_secs();
+
+    {
+        let attempts = state.login_attempts.lock();
+        if let Some(&(cnt, lockout_until)) = attempts.get(&ip) {
+            if cnt >= crate::MAX_LOGIN_ATTEMPTS && now < lockout_until {
+                let remaining = lockout_until - now;
+                return axum::response::Redirect::to(
+                    &format!("/login?error=locked&secs={}", remaining)
+                ).into_response();
+            }
+        }
+    }
+
     if crate::PASSWORD.is_empty()
         || hash_password(crate::PASSWORD) == hash_password(&form.password)
     {
+        state.login_attempts.lock().remove(&ip);
         let mut c = Cookie::new("session", "ok");
         c.set_path("/");
         return (jar.add(c), axum::response::Redirect::to("/")).into_response();
+    }
+
+    {
+        let mut attempts = state.login_attempts.lock();
+        let entry = attempts.entry(ip).or_insert((0, 0));
+        entry.0 += 1;
+        if entry.0 >= crate::MAX_LOGIN_ATTEMPTS {
+            entry.1 = now + crate::LOCKOUT_SECS;
+        }
     }
     axum::response::Redirect::to("/login?error=1").into_response()
 }
@@ -146,6 +156,118 @@ pub async fn video_stream(
 }
 
 // ============================================================
+//  WebSocket 事件推送
+// ============================================================
+
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+) -> impl IntoResponse {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    ws.on_upgrade(|socket| ws_client(socket, state)).into_response()
+}
+
+async fn ws_client(mut socket: WebSocket, state: AppState) {
+    let mut rx = state.ws_tx.subscribe();
+    loop {
+        tokio::select! {
+            Ok(msg) = rx.recv() => {
+                if socket.send(Message::Text(msg)).await.is_err() { break; }
+            }
+            Some(Ok(_)) = socket.recv() => {}
+            else => break,
+        }
+    }
+}
+
+// ============================================================
+//  摄像头管理
+// ============================================================
+
+#[derive(Serialize)]
+pub struct CameraInfo { pub index: u32, pub name: String }
+
+pub async fn cameras_list(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+) -> Json<Vec<CameraInfo>> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(vec![]); }
+    let cams = state.available_cameras.lock();
+    Json(cams.iter().map(|(idx, name)| CameraInfo { index: *idx, name: name.clone() }).collect())
+}
+
+#[derive(Deserialize)]
+pub struct SwitchQuery { index: u32 }
+
+pub async fn switch_camera(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    Query(q): Query<SwitchQuery>,
+) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    state.camera_idx.store(q.index as usize, Ordering::Relaxed);
+    state.camera.lock().prev_gray = None;
+    let msg = serde_json::json!({"event":"camera_switched","index":q.index}).to_string();
+    state.ws_tx.send(msg).ok();
+    Json(OkResp { ok: true, error: None })
+}
+
+// ============================================================
+//  图像调节
+// ============================================================
+
+#[derive(Deserialize)]
+pub struct ImageQuery {
+    brightness: Option<i32>,
+    contrast: Option<i32>,
+    saturation: Option<i32>,
+}
+
+pub async fn set_image(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    Query(q): Query<ImageQuery>,
+) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    let mut s = state.image_settings.lock();
+    if let Some(v) = q.brightness { s.brightness = v.max(-100).min(100); }
+    if let Some(v) = q.contrast   { s.contrast   = v.max(-100).min(100); }
+    if let Some(v) = q.saturation { s.saturation = v.max(-100).min(100); }
+    Json(OkResp { ok: true, error: None })
+}
+
+#[derive(Deserialize)]
+pub struct FlipQuery { h: Option<u8>, v: Option<u8> }
+
+pub async fn set_flip(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    Query(q): Query<FlipQuery>,
+) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    let mut s = state.image_settings.lock();
+    if q.h.is_some() { s.flip_h = !s.flip_h; }
+    if q.v.is_some() { s.flip_v = !s.flip_v; }
+    Json(OkResp { ok: true, error: None })
+}
+
+#[derive(Deserialize)]
+pub struct RotQuery { deg: u32 }
+
+pub async fn set_rotation(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    Query(q): Query<RotQuery>,
+) -> Json<OkResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    state.image_settings.lock().rotation = match q.deg { 0|90|180|270 => q.deg, _ => 0 };
+    Json(OkResp { ok: true, error: None })
+}
+
+// ============================================================
 //  控制 API（拍照、录像、开关等）
 // ============================================================
 
@@ -163,10 +285,10 @@ pub async fn take_photo(
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
         return Json(OkResp { ok: false, error: Some("Unauthorized".into()) });
     }
-    let jpeg = state.camera.lock().latest_jpeg.clone();
-    match jpeg {
+    match state.camera.lock().latest_jpeg.clone() {
         Some(j) => {
             std::fs::write(format!("{}/photos/{}.jpg", crate::SAVE_DIR, ts_str()), &*j).ok();
+            crate::storage::cleanup_old_files(crate::SAVE_DIR, crate::MAX_STORAGE_MB);
             Json(OkResp { ok: true, error: None })
         }
         None => Json(OkResp { ok: false, error: Some("无帧数据".into()) }),
@@ -180,9 +302,7 @@ pub async fn toggle_record(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
 ) -> Json<RecordResp> {
-    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
-        return Json(RecordResp::default());
-    }
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(RecordResp::default()); }
     let (recording, frames) = {
         let mut cam = state.camera.lock();
         if cam.recording {
@@ -197,11 +317,7 @@ pub async fn toggle_record(
     };
     if let Some(f) = frames {
         let path = format!("{}/videos/{}.avi", crate::SAVE_DIR, ts_str());
-        tokio::task::spawn_blocking(move || {
-            if let Err(e) = save_mjpeg_avi(&f, crate::RECORD_FPS, &path) {
-                tracing::error!("录像保存失败: {}", e);
-            }
-        });
+        tokio::task::spawn_blocking(move || { save_mjpeg_avi(&f, crate::RECORD_FPS, &path).ok(); });
     }
     Json(RecordResp { recording })
 }
@@ -221,20 +337,13 @@ pub async fn toggle_feature(
     match q.name.as_str() {
         "motion" => {
             let mut cam = state.camera.lock();
-            cam.motion_detect = on;
-            cam.prev_gray = None;
+            cam.motion_detect = on; cam.prev_gray = None;
             Json(serde_json::json!({"motion": on}))
         }
-        "gate" => {
-            state.camera.lock().motion_gate = on;
-            Json(serde_json::json!({"gate": on}))
-        }
-        "auto" => {
+        "gate" => { state.camera.lock().motion_gate = on; Json(serde_json::json!({"gate": on})) }
+        "auto"  => {
             state.camera.lock().auto_capture = on;
-            if on {
-                let s = state.clone();
-                tokio::spawn(async move { auto_capture_task(s).await });
-            }
+            if on { let s = state.clone(); tokio::spawn(async move { auto_capture_task(s).await }); }
             Json(serde_json::json!({"auto": on}))
         }
         _ => Json(serde_json::json!({"ok": false})),
@@ -258,33 +367,25 @@ async fn auto_capture_task(state: AppState) {
 #[derive(Deserialize)]
 pub struct ValQuery { val: Option<String> }
 
-pub async fn set_interval(
-    State(s): State<AppState>, jar: PrivateCookieJar, Query(q): Query<ValQuery>,
-) -> Json<OkResp> {
+pub async fn set_interval(State(s): State<AppState>, jar: PrivateCookieJar, Query(q): Query<ValQuery>) -> Json<OkResp> {
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
     s.camera.lock().auto_interval = q.val.and_then(|v| v.parse().ok()).unwrap_or(10u64).max(1);
     Json(OkResp { ok: true, error: None })
 }
 
-pub async fn set_sensitivity(
-    State(s): State<AppState>, jar: PrivateCookieJar, Query(q): Query<ValQuery>,
-) -> Json<OkResp> {
+pub async fn set_sensitivity(State(s): State<AppState>, jar: PrivateCookieJar, Query(q): Query<ValQuery>) -> Json<OkResp> {
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
     s.camera.lock().sensitivity = q.val.and_then(|v| v.parse().ok()).unwrap_or(30);
     Json(OkResp { ok: true, error: None })
 }
 
-pub async fn set_min_area(
-    State(s): State<AppState>, jar: PrivateCookieJar, Query(q): Query<ValQuery>,
-) -> Json<OkResp> {
+pub async fn set_min_area(State(s): State<AppState>, jar: PrivateCookieJar, Query(q): Query<ValQuery>) -> Json<OkResp> {
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
     s.camera.lock().min_area = q.val.and_then(|v| v.parse().ok()).unwrap_or(1500);
     Json(OkResp { ok: true, error: None })
 }
 
-pub async fn set_frame_skip(
-    State(s): State<AppState>, jar: PrivateCookieJar, Query(q): Query<ValQuery>,
-) -> Json<OkResp> {
+pub async fn set_frame_skip(State(s): State<AppState>, jar: PrivateCookieJar, Query(q): Query<ValQuery>) -> Json<OkResp> {
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
     s.camera.lock().frame_skip = q.val.and_then(|v| v.parse::<u32>().ok()).unwrap_or(10).max(1);
     Json(OkResp { ok: true, error: None })
@@ -301,12 +402,10 @@ pub struct StatsResp {
     motion_now: bool,
     unknown_count: u64,
     unknown_face: bool,
+    camera_idx: usize,
 }
 
-pub async fn get_stats(
-    State(state): State<AppState>,
-    _jar: PrivateCookieJar,
-) -> Json<StatsResp> {
+pub async fn get_stats(State(state): State<AppState>, _jar: PrivateCookieJar) -> Json<StatsResp> {
     let cam = state.camera.lock();
     Json(StatsResp {
         resolution: format!("{}x{}", cam.resolution.0, cam.resolution.1),
@@ -314,6 +413,7 @@ pub async fn get_stats(
         motion_now: cam.motion_now,
         unknown_count: cam.unknown_count,
         unknown_face: false,
+        camera_idx: state.camera_idx.load(Ordering::Relaxed),
     })
 }
 
@@ -324,56 +424,34 @@ pub async fn get_stats(
 const ALLOWED_TYPES: &[&str] = &["photos", "videos", "motion", "auto", "alerts"];
 
 #[derive(Deserialize)]
-pub struct TypeQuery {
-    #[serde(rename = "type")]
-    ftype: Option<String>,
-}
+pub struct TypeQuery { #[serde(rename = "type")] ftype: Option<String> }
 
 #[derive(Serialize)]
 pub struct FilesResp { files: Vec<String> }
 
-pub async fn list_files(
-    _: State<AppState>,
-    jar: PrivateCookieJar,
-    Query(q): Query<TypeQuery>,
-) -> Json<FilesResp> {
-    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
-        return Json(FilesResp { files: vec![] });
-    }
+pub async fn list_files(_: State<AppState>, jar: PrivateCookieJar, Query(q): Query<TypeQuery>) -> Json<FilesResp> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(FilesResp { files: vec![] }); }
     let ftype = q.ftype.unwrap_or_else(|| "photos".into());
-    if !ALLOWED_TYPES.contains(&ftype.as_str()) {
-        return Json(FilesResp { files: vec![] });
-    }
-    let dir = format!("{}/{}", crate::SAVE_DIR, ftype);
-    let files = std::fs::read_dir(&dir).map(|rd| {
-        let mut v: Vec<String> = rd
-            .filter_map(|e| e.ok())
+    if !ALLOWED_TYPES.contains(&ftype.as_str()) { return Json(FilesResp { files: vec![] }); }
+    let files = std::fs::read_dir(format!("{}/{}", crate::SAVE_DIR, ftype)).map(|rd| {
+        let mut v: Vec<String> = rd.filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().to_string())
-            .filter(|n| !n.starts_with('.'))
-            .collect();
-        v.sort_by(|a, b| b.cmp(a));
-        v
+            .filter(|n| !n.starts_with('.')).collect();
+        v.sort_by(|a, b| b.cmp(a)); v
     }).unwrap_or_default();
     Json(FilesResp { files })
 }
 
-pub async fn serve_file(
-    _: State<AppState>,
-    jar: PrivateCookieJar,
-    Path((ftype, filename)): Path<(String, String)>,
-) -> impl IntoResponse {
+pub async fn serve_file(_: State<AppState>, jar: PrivateCookieJar, Path((ftype, filename)): Path<(String, String)>) -> impl IntoResponse {
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
     if !ALLOWED_TYPES.contains(&ftype.as_str()) {
         return (StatusCode::NOT_FOUND, "Not Found").into_response();
     }
-    let safe = std::path::Path::new(&filename)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let path = format!("{}/{}/{}", crate::SAVE_DIR, ftype, safe);
-    match std::fs::read(&path) {
+    let safe = std::path::Path::new(&filename).file_name()
+        .map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    match std::fs::read(format!("{}/{}/{}", crate::SAVE_DIR, ftype, safe)) {
         Ok(data) => {
             let ct = if safe.ends_with(".avi") { "video/avi" }
                      else if safe.ends_with(".mp4") { "video/mp4" }
@@ -385,26 +463,17 @@ pub async fn serve_file(
 }
 
 #[derive(Deserialize)]
-pub struct DeleteQuery {
-    #[serde(rename = "type")] ftype: Option<String>,
-    name: Option<String>,
-}
+pub struct DeleteQuery { #[serde(rename = "type")] ftype: Option<String>, name: Option<String> }
 
-pub async fn delete_file(
-    _: State<AppState>,
-    jar: PrivateCookieJar,
-    Query(q): Query<DeleteQuery>,
-) -> Json<OkResp> {
+pub async fn delete_file(_: State<AppState>, jar: PrivateCookieJar, Query(q): Query<DeleteQuery>) -> Json<OkResp> {
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
     let ftype = q.ftype.unwrap_or_default();
     let name  = q.name.unwrap_or_default();
     if !ALLOWED_TYPES.contains(&ftype.as_str()) || name.is_empty() {
         return Json(OkResp { ok: false, error: Some("invalid params".into()) });
     }
-    let safe = std::path::Path::new(&name)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let safe = std::path::Path::new(&name).file_name()
+        .map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     match std::fs::remove_file(format!("{}/{}/{}", crate::SAVE_DIR, ftype, safe)) {
         Ok(_)  => Json(OkResp { ok: true, error: None }),
         Err(e) => Json(OkResp { ok: false, error: Some(e.to_string()) }),
@@ -418,21 +487,12 @@ pub async fn delete_file(
 #[derive(Deserialize)]
 pub struct ConfigPayload {
     email_enabled: Option<bool>,
-    smtp_host: Option<String>,
-    smtp_port: Option<u16>,
-    email_from: Option<String>,
-    email_password: Option<String>,
-    email_to: Option<String>,
-    cooldown: Option<u64>,
-    on_motion: Option<bool>,
-    on_unknown: Option<bool>,
+    smtp_host: Option<String>, smtp_port: Option<u16>,
+    email_from: Option<String>, email_password: Option<String>, email_to: Option<String>,
+    cooldown: Option<u64>, on_motion: Option<bool>, on_unknown: Option<bool>,
 }
 
-pub async fn save_config(
-    State(state): State<AppState>,
-    jar: PrivateCookieJar,
-    Json(p): Json<ConfigPayload>,
-) -> Json<OkResp> {
+pub async fn save_config(State(state): State<AppState>, jar: PrivateCookieJar, Json(p): Json<ConfigPayload>) -> Json<OkResp> {
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
         return Json(OkResp { ok: false, error: Some("Unauthorized".into()) });
     }
@@ -449,10 +509,7 @@ pub async fn save_config(
     Json(OkResp { ok: true, error: None })
 }
 
-pub async fn test_email_route(
-    State(state): State<AppState>,
-    jar: PrivateCookieJar,
-) -> Json<OkResp> {
+pub async fn test_email_route(State(state): State<AppState>, jar: PrivateCookieJar) -> Json<OkResp> {
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
         return Json(OkResp { ok: false, error: Some("Unauthorized".into()) });
     }
