@@ -489,3 +489,77 @@ function testEmail(){
 loadCameras();
 connectWs();
 </script></body></html>"#;
+
+pub const MULTIVIEW_HTML: &str = r#"<!DOCTYPE html><html lang="zh"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>多摄像头分屏 - 监控系统</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#111;color:#eee;font-family:'Segoe UI',sans-serif}
+header{background:#16213e;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #0f3460}
+header h1{font-size:16px;color:#e94560}
+.controls{display:flex;gap:8px;align-items:center}
+.btn{padding:6px 12px;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600}
+.btn-blue{background:#0f3460;color:#fff}.btn-red{background:#e94560;color:#fff}
+.grid{display:grid;gap:4px;padding:4px;height:calc(100vh - 52px)}
+.grid.g1{grid-template-columns:1fr}
+.grid.g2{grid-template-columns:1fr 1fr}
+.grid.g4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+.cam-box{background:#000;position:relative;overflow:hidden;border-radius:6px}
+.cam-box img{width:100%;height:100%;object-fit:contain;display:block}
+.cam-label{position:absolute;top:6px;left:8px;background:rgba(0,0,0,.7);color:#fff;padding:2px 8px;border-radius:8px;font-size:12px}
+.cam-fps{position:absolute;top:6px;right:8px;background:rgba(0,0,0,.6);color:#0d7377;padding:2px 8px;border-radius:8px;font-size:11px}
+.motion-dot{position:absolute;bottom:8px;left:8px;width:10px;height:10px;border-radius:50%;background:#0d7377;display:none}
+.motion-dot.active{background:#e94560;display:block}
+</style>
+</head><body>
+<header>
+  <h1>多摄像头分屏监控</h1>
+  <div class="controls">
+    <button class="btn btn-blue" onclick="setLayout(1)">单屏</button>
+    <button class="btn btn-blue" onclick="setLayout(2)">双屏</button>
+    <button class="btn btn-blue" onclick="setLayout(4)">四屏</button>
+    <span id="cam-count" style="font-size:12px;color:#aaa;margin-left:8px"></span>
+    <a href="/" class="btn btn-blue">返回主页</a>
+  </div>
+</header>
+<div class="grid g2" id="grid"></div>
+<script>
+let cameras=[], layout=2;
+
+async function init(){
+  const r=await fetch('/cameras').then(r=>r.json()).catch(()=>[]);
+  cameras=r.length?r:[{index:0,name:'摄像头 0'},{index:1,name:'摄像头 1'}];
+  document.getElementById('cam-count').textContent=cameras.length+' 个摄像头';
+  setLayout(Math.min(layout,cameras.length)||1);
+}
+
+function setLayout(n){
+  layout=n;
+  const grid=document.getElementById('grid');
+  grid.className='grid g'+n;
+  grid.innerHTML='';
+  const show=cameras.slice(0,n);
+  show.forEach(cam=>{
+    const box=document.createElement('div');
+    box.className='cam-box';
+    box.innerHTML=`
+      <img src="/video?cam=${cam.index}" onerror="this.src='/video'">
+      <div class="cam-label">${cam.index}: ${cam.name}</div>
+      <div class="cam-fps" id="fps-${cam.index}">-- fps</div>
+      <div class="motion-dot" id="mdot-${cam.index}"></div>`;
+    grid.appendChild(box);
+  });
+}
+
+setInterval(()=>{
+  fetch('/stats').then(r=>r.json()).then(d=>{
+    const el=document.getElementById('fps-'+d.camera_idx);
+    if(el)el.textContent=d.fps?.toFixed(1)+' fps';
+    const mdot=document.getElementById('mdot-'+d.camera_idx);
+    if(mdot)mdot.classList.toggle('active',d.motion_now);
+  });
+},1000);
+
+init();
+</script></body></html>"#;
