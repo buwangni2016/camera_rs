@@ -1,12 +1,37 @@
 /*!
- * 摄像头捕获模块（Linux V4L2）
+ * 摄像头捕获模块（跨平台：Linux V4L2 / Windows Media Foundation）
+ * 支持：摄像头枚举、热切换、亮度/对比度/饱和度/翻转/旋转
  */
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use image::{DynamicImage, ImageBuffer, Rgb};
-use crate::state::AppState;
+use image::{DynamicImage, ImageBuffer, Rgb, imageops};
+use crate::state::{AppState, ImageSettings};
 use crate::motion;
+
+// ============================================================
+//  摄像头枚举
+// ============================================================
+
+pub fn list_cameras() -> Vec<(u32, String)> {
+    use nokhwa::utils::{ApiBackend, CameraIndex};
+    match nokhwa::query(ApiBackend::Auto) {
+        Ok(cameras) => cameras.into_iter()
+            .filter_map(|info| {
+                if let CameraIndex::Index(idx) = info.index() {
+                    Some((*idx, info.human_name().to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        Err(e) => {
+            tracing::warn!("枚举摄像头失败: {} — 返回空列表", e);
+            vec![]
+        }
+    }
+}
 
 // ============================================================
 //  JPEG 编解码
@@ -39,7 +64,90 @@ pub fn ts_str() -> String {
 }
 
 // ============================================================
-//  时间戳水印（极简 bitmap 字体，6×8 像素/字符）
+//  图像处理
+// ============================================================
+
+fn apply_brightness(rgb: &mut [u8], brightness: i32) {
+    if brightness == 0 { return; }
+    for p in rgb.iter_mut() {
+        *p = (*p as i32 + brightness).max(0).min(255) as u8;
+    }
+}
+
+fn apply_contrast(rgb: &mut [u8], contrast: i32) {
+    if contrast == 0 { return; }
+    let factor = (259.0 * (contrast as f32 + 255.0)) / (255.0 * (259.0 - contrast as f32));
+    for p in rgb.iter_mut() {
+        *p = (factor * (*p as f32 - 128.0) + 128.0).max(0.0).min(255.0) as u8;
+    }
+}
+
+fn apply_saturation(rgb: &mut [u8], saturation: i32) {
+    if saturation == 0 { return; }
+    let factor = 1.0 + saturation as f32 / 100.0;
+    for chunk in rgb.chunks_exact_mut(3) {
+        let r = chunk[0] as f32;
+        let g = chunk[1] as f32;
+        let b = chunk[2] as f32;
+        let gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        chunk[0] = (gray + factor * (r - gray)).max(0.0).min(255.0) as u8;
+        chunk[1] = (gray + factor * (g - gray)).max(0.0).min(255.0) as u8;
+        chunk[2] = (gray + factor * (b - gray)).max(0.0).min(255.0) as u8;
+    }
+}
+
+fn apply_flip_h(rgb: &mut [u8], width: u32, height: u32) {
+    let (w, h) = (width as usize, height as usize);
+    for y in 0..h {
+        for x in 0..w / 2 {
+            let a = (y * w + x) * 3;
+            let b = (y * w + (w - 1 - x)) * 3;
+            for c in 0..3usize { rgb.swap(a + c, b + c); }
+        }
+    }
+}
+
+fn apply_flip_v(rgb: &mut [u8], width: u32, height: u32) {
+    let (w, h) = (width as usize, height as usize);
+    for y in 0..h / 2 {
+        for x in 0..w {
+            let a = (y * w + x) * 3;
+            let b = ((h - 1 - y) * w + x) * 3;
+            for c in 0..3usize { rgb.swap(a + c, b + c); }
+        }
+    }
+}
+
+fn apply_rotation(rgb: Vec<u8>, width: u32, height: u32, degrees: u32) -> (Vec<u8>, u32, u32) {
+    if degrees == 0 { return (rgb, width, height); }
+    let img: ImageBuffer<Rgb<u8>, Vec<u8>> = match ImageBuffer::from_raw(width, height, rgb) {
+        Some(i) => i,
+        None => return (vec![], width, height),
+    };
+    let rotated = match degrees {
+        90  => imageops::rotate90(&img),
+        180 => imageops::rotate180(&img),
+        270 => imageops::rotate270(&img),
+        _   => return (img.into_raw(), width, height),
+    };
+    let (nw, nh) = (rotated.width(), rotated.height());
+    (rotated.into_raw(), nw, nh)
+}
+
+pub fn apply_image_settings(rgb: &mut Vec<u8>, width: &mut u32, height: &mut u32, s: &ImageSettings) {
+    apply_brightness(rgb, s.brightness);
+    apply_contrast(rgb, s.contrast);
+    apply_saturation(rgb, s.saturation);
+    if s.flip_h { apply_flip_h(rgb, *width, *height); }
+    if s.flip_v { apply_flip_v(rgb, *width, *height); }
+    if s.rotation != 0 {
+        let (new_rgb, nw, nh) = apply_rotation(std::mem::take(rgb), *width, *height, s.rotation);
+        *rgb = new_rgb; *width = nw; *height = nh;
+    }
+}
+
+// ============================================================
+//  时间戳水印
 // ============================================================
 
 pub fn overlay_timestamp(rgb: &mut [u8], width: u32, height: u32) {
@@ -84,7 +192,7 @@ fn tiny_font() -> std::collections::HashMap<char, [u8; 8]> {
 }
 
 // ============================================================
-//  捕获循环入口
+//  捕获循环（支持摄像头热切换）
 // ============================================================
 
 pub async fn capture_loop(state: AppState) {
@@ -97,50 +205,75 @@ fn run_nokhwa_loop(state: AppState) {
     use nokhwa::{Camera, utils::{CameraIndex, RequestedFormat, RequestedFormatType}};
     use nokhwa::pixel_format::RgbFormat;
 
-    let index = CameraIndex::Index(crate::CAMERA_INDEX as u32);
-    let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
-
-    let mut camera = match Camera::new(index, requested) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("无法打开摄像头: {} — 使用占位帧", e);
-            run_placeholder_loop(state);
-            return;
-        }
-    };
-
-    if let Err(e) = camera.open_stream() {
-        tracing::warn!("无法打开摄像头流: {} — 使用占位帧", e);
-        run_placeholder_loop(state);
-        return;
-    }
-
-    let fmt = camera.camera_format();
-    let (cam_w, cam_h) = (fmt.width(), fmt.height());
-    state.camera.lock().resolution = (cam_w, cam_h);
-    tracing::info!("摄像头就绪 {}x{}", cam_w, cam_h);
-
     loop {
-        let frame = match camera.frame() {
-            Ok(f) => f,
+        let target_idx = state.camera_idx.load(Ordering::Relaxed);
+        let index = CameraIndex::Index(target_idx as u32);
+        let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
+
+        let mut camera = match Camera::new(index, requested) {
+            Ok(c) => c,
             Err(e) => {
-                tracing::warn!("读帧失败: {}", e);
-                std::thread::sleep(Duration::from_millis(50));
+                tracing::warn!("无法打开摄像头 {}: {} — 使用占位帧", target_idx, e);
+                run_placeholder_briefly(&state, target_idx);
                 continue;
             }
         };
 
-        let rgb_image = match frame.decode_image::<RgbFormat>() {
-            Ok(img) => img,
-            Err(e) => {
-                tracing::warn!("解码帧失败: {}", e);
-                continue;
-            }
-        };
+        if let Err(e) = camera.open_stream() {
+            tracing::warn!("无法打开流 {}: {} — 使用占位帧", target_idx, e);
+            run_placeholder_briefly(&state, target_idx);
+            continue;
+        }
 
-        let (w, h) = (rgb_image.width(), rgb_image.height());
-        let mut rgb = rgb_image.into_raw();
-        process_and_broadcast(&state, &mut rgb, w, h);
+        let fmt = camera.camera_format();
+        let (cam_w, cam_h) = (fmt.width(), fmt.height());
+        state.camera.lock().resolution = (cam_w, cam_h);
+        tracing::info!("摄像头 {} 就绪 {}x{}", target_idx, cam_w, cam_h);
+
+        loop {
+            if state.camera_idx.load(Ordering::Relaxed) != target_idx {
+                let _ = camera.stop_stream();
+                tracing::info!("检测到摄像头切换请求，重新初始化...");
+                break;
+            }
+
+            let frame = match camera.frame() {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!("读帧失败: {}", e);
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+            };
+
+            let rgb_image = match frame.decode_image::<RgbFormat>() {
+                Ok(img) => img,
+                Err(_) => continue,
+            };
+
+            let (mut w, mut h) = (rgb_image.width(), rgb_image.height());
+            let mut rgb = rgb_image.into_raw();
+
+            let img_settings = state.image_settings.lock().clone();
+            apply_image_settings(&mut rgb, &mut w, &mut h, &img_settings);
+
+            process_and_broadcast(&state, &mut rgb, w, h);
+        }
+    }
+}
+
+fn run_placeholder_briefly(state: &AppState, expected_idx: usize) {
+    let (w, h) = (640u32, 480u32);
+    state.camera.lock().resolution = (w, h);
+    for _ in 0..25 {
+        if state.camera_idx.load(Ordering::Relaxed) != expected_idx { return; }
+        let mut rgb = vec![30u8; (w * h * 3) as usize];
+        overlay_timestamp(&mut rgb, w, h);
+        let jpeg = encode_jpeg(&rgb, w, h, 70);
+        let arc = Arc::new(jpeg);
+        state.camera.lock().latest_jpeg = Some(arc.clone());
+        let _ = state.frame_tx.send(arc);
+        std::thread::sleep(Duration::from_millis(40));
     }
 }
 
@@ -188,6 +321,10 @@ fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32) {
                         crate::email::send_motion_alert_blocking(cfg, count, &p).ok();
                     });
                 }
+
+                // 发送 WebSocket 事件
+                let msg = serde_json::json!({"event":"motion","count":cam.motion_count}).to_string();
+                state.ws_tx.send(msg).ok();
             }
         }
 
@@ -197,47 +334,6 @@ fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32) {
     }
 
     let _ = state.frame_tx.send(jpeg_arc);
-}
-
-fn run_placeholder_loop(state: AppState) {
-    let (w, h) = (640u32, 480u32);
-    state.camera.lock().resolution = (w, h);
-    loop {
-        let mut rgb = vec![0u8; (w * h * 3) as usize];
-        for y in 0..h as usize {
-            for x in 0..w as usize {
-                let shade: u8 = if (x / 32 + y / 32) % 2 == 0 { 40 } else { 60 };
-                let b = (y * w as usize + x) * 3;
-                rgb[b] = shade; rgb[b+1] = shade; rgb[b+2] = shade;
-            }
-        }
-        overlay_timestamp(&mut rgb, w, h);
-        let jpeg = encode_jpeg(&rgb, w, h, 70);
-        let arc = Arc::new(jpeg);
-        state.camera.lock().latest_jpeg = Some(arc.clone());
-        let _ = state.frame_tx.send(arc);
-        std::thread::sleep(Duration::from_millis(40));
-    }
-}
-
-fn yuyv_to_rgb(yuyv: &[u8], width: u32, height: u32) -> (u32, u32, Vec<u8>) {
-    let clamp = |x: f32| x.max(0.0).min(255.0) as u8;
-    let mut rgb = vec![0u8; (width * height * 3) as usize];
-    for (i, chunk) in yuyv.chunks_exact(4).enumerate() {
-        let y0 = chunk[0] as f32;
-        let u  = chunk[1] as f32 - 128.0;
-        let y1 = chunk[2] as f32;
-        let v  = chunk[3] as f32 - 128.0;
-        let cvt = |y: f32| (clamp(y + 1.402*v), clamp(y - 0.344*u - 0.714*v), clamp(y + 1.772*u));
-        let (r0,g0,b0) = cvt(y0);
-        let (r1,g1,b1) = cvt(y1);
-        let base = i * 6;
-        if base + 5 < rgb.len() {
-            rgb[base] = r0; rgb[base+1] = g0; rgb[base+2] = b0;
-            rgb[base+3] = r1; rgb[base+4] = g1; rgb[base+5] = b1;
-        }
-    }
-    (width, height, rgb)
 }
 
 // ============================================================
@@ -250,7 +346,6 @@ pub fn save_mjpeg_avi(frames: &[Vec<u8>], fps: f64, path: &str) -> std::io::Resu
     let fps_u        = fps as u32;
     let us_per_frame = (1_000_000.0 / fps) as u32;
 
-    // movi 数据
     let mut movi: Vec<u8> = Vec::new();
     let mut offsets: Vec<(u32, u32)> = Vec::new();
     for f in frames {
@@ -269,71 +364,61 @@ pub fn save_mjpeg_avi(frames: &[Vec<u8>], fps: f64, path: &str) -> std::io::Resu
     let riff_pos = buf.len(); mowi_u32(&mut buf, 0);
     mowi_tag(&mut buf, b"AVI ");
 
-    // hdrl
     mowi_tag(&mut buf, b"LIST");
     let hdrl_pos = buf.len(); mowi_u32(&mut buf, 0);
     mowi_tag(&mut buf, b"hdrl");
 
-    // avih (56 bytes)
     mowi_tag(&mut buf, b"avih"); mowi_u32(&mut buf, 56);
     mowi_u32(&mut buf, us_per_frame);
     mowi_u32(&mut buf, 0); mowi_u32(&mut buf, 0);
-    mowi_u32(&mut buf, 0x0010); // AVIF_HASINDEX
+    mowi_u32(&mut buf, 0x0010);
     mowi_u32(&mut buf, frame_count);
-    for _ in 0..3 { mowi_u32(&mut buf, 0); } // InitialFrames, Streams=1 placeholder, SuggestedBufSize
-    { let n = buf.len() - 4; buf[n..n+4].copy_from_slice(&1u32.to_le_bytes()); } // Streams = 1
-    for _ in 0..6 { mowi_u32(&mut buf, 0); } // Width, Height, Reserved×4
+    for _ in 0..3 { mowi_u32(&mut buf, 0); }
+    { let n = buf.len() - 4; buf[n..n+4].copy_from_slice(&1u32.to_le_bytes()); }
+    for _ in 0..6 { mowi_u32(&mut buf, 0); }
 
-    // strl
     mowi_tag(&mut buf, b"LIST");
     let strl_pos = buf.len(); mowi_u32(&mut buf, 0);
     mowi_tag(&mut buf, b"strl");
 
-    // strh (56 bytes)
     mowi_tag(&mut buf, b"strh"); mowi_u32(&mut buf, 56);
     mowi_tag(&mut buf, b"vids"); mowi_tag(&mut buf, b"MJPG");
-    mowi_u32(&mut buf, 0); mowi_u32(&mut buf, 0); // Flags, Priority+Language
-    mowi_u32(&mut buf, 0); // InitialFrames
-    mowi_u32(&mut buf, 1); mowi_u32(&mut buf, fps_u); // Scale, Rate
-    mowi_u32(&mut buf, 0); mowi_u32(&mut buf, frame_count); // Start, Length
-    mowi_u32(&mut buf, 0); mowi_u32(&mut buf, u32::MAX); // SugBufSize, Quality
-    mowi_u32(&mut buf, 0); // SampleSize
-    for _ in 0..4 { buf.extend_from_slice(&0u16.to_le_bytes()); } // rcFrame
+    mowi_u32(&mut buf, 0); mowi_u32(&mut buf, 0);
+    mowi_u32(&mut buf, 0);
+    mowi_u32(&mut buf, 1); mowi_u32(&mut buf, fps_u);
+    mowi_u32(&mut buf, 0); mowi_u32(&mut buf, frame_count);
+    mowi_u32(&mut buf, 0); mowi_u32(&mut buf, u32::MAX);
+    mowi_u32(&mut buf, 0);
+    for _ in 0..4 { buf.extend_from_slice(&0u16.to_le_bytes()); }
 
-    // strf / BITMAPINFOHEADER (40 bytes)
     mowi_tag(&mut buf, b"strf"); mowi_u32(&mut buf, 40);
-    mowi_u32(&mut buf, 40); // biSize
-    mowi_u32(&mut buf, 0); mowi_u32(&mut buf, 0); // Width, Height
-    buf.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
-    buf.extend_from_slice(&24u16.to_le_bytes()); // biBitCount
-    mowi_tag(&mut buf, b"MJPG"); // biCompression
-    for _ in 0..5 { mowi_u32(&mut buf, 0); } // SizeImage, X/YPels, ClrUsed, ClrImportant
+    mowi_u32(&mut buf, 40);
+    mowi_u32(&mut buf, 0); mowi_u32(&mut buf, 0);
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    buf.extend_from_slice(&24u16.to_le_bytes());
+    mowi_tag(&mut buf, b"MJPG");
+    for _ in 0..5 { mowi_u32(&mut buf, 0); }
 
-    // backfill strl
     let strl_sz = (buf.len() - strl_pos - 4) as u32;
     buf[strl_pos..strl_pos+4].copy_from_slice(&strl_sz.to_le_bytes());
-    // backfill hdrl
     let hdrl_sz = (buf.len() - hdrl_pos - 4) as u32;
     buf[hdrl_pos..hdrl_pos+4].copy_from_slice(&hdrl_sz.to_le_bytes());
 
-    // movi
     mowi_tag(&mut buf, b"LIST");
     mowi_u32(&mut buf, (4 + movi.len()) as u32);
     mowi_tag(&mut buf, b"movi");
     let movi_start = buf.len() as u32;
     buf.extend_from_slice(&movi);
 
-    // idx1
     mowi_tag(&mut buf, b"idx1");
     mowi_u32(&mut buf, frame_count * 16);
     for (off, sz) in &offsets {
         mowi_tag(&mut buf, b"00dc");
-        mowi_u32(&mut buf, 0x10); // AVIIF_KEYFRAME
+        mowi_u32(&mut buf, 0x10);
         mowi_u32(&mut buf, movi_start + off - 8);
         mowi_u32(&mut buf, *sz);
     }
 
-    // backfill RIFF
     let riff_sz = (buf.len() - riff_pos - 4) as u32;
     buf[riff_pos..riff_pos+4].copy_from_slice(&riff_sz.to_le_bytes());
 
