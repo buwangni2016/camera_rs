@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  camera_rs:
+    build: .
+    container_name: camera_rs
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    # 挂载摄像头设备（根据实际设备路径修改）
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
+    volumes:
+      - ./captures:/app/captures
+      - ./config.toml:/app/config.toml
+    environment:
+      - RUST_LOG=info
+    # 需要访问 USB 设备
+    privileged: false
+    group_add:
+      - video
