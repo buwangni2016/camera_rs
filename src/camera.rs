@@ -232,8 +232,7 @@ pub async fn capture_loop_for(state: AppState, idx: usize) {
 }
 
 fn run_nokhwa_loop(state: AppState) {
-    let idx = state.camera_idx.load(Ordering::Relaxed);
-    run_nokhwa_loop_idx(state, idx);
+    run_nokhwa_loop_idx(state, usize::MAX);
 }
 
 fn run_nokhwa_loop_idx(state: AppState, fixed_idx: usize) {
