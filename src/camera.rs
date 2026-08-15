@@ -366,7 +366,7 @@ fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32, ca
     }
 
     let (_, detected, new_gray) = if motion_detect {
-        motion::detect_motion(&rgb_for_motion, w, h, &prev_gray, sensitivity, min_area)
+        motion::detect_motion(&mut rgb_for_motion, w, h, &prev_gray, sensitivity, min_area)
     } else {
         let g = motion::to_grayscale(rgb, w, h);
         (vec![], false, g)

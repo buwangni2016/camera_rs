@@ -366,6 +366,7 @@ impl AppState {
         if self.notify_suppressed.load(Ordering::Relaxed) { return false; }
         let rule = self.alert_time_rule.lock();
         if !rule.enabled { return true; }
+        use chrono::{Datelike, Timelike};
         let now = chrono::Local::now();
         let wd_bit = crate::schedule::weekday_bit_pub(now.weekday());
         if rule.weekdays != 0xFF && (rule.weekdays & wd_bit) == 0 { return true; }
