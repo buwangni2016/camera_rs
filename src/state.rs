@@ -322,7 +322,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(camera_idx: usize, sec_cfg: &crate::config::SecurityConfig) -> Self {
-        let (frame_tx, _)   = broadcast::channel(4);
+        let (frame_tx, _)   = broadcast::channel(8);
         let (ws_tx, _)      = broadcast::channel(32);
         let mut frame_txs   = HashMap::new();
         frame_txs.insert(camera_idx, frame_tx.clone());

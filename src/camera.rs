@@ -134,6 +134,19 @@ fn apply_rotation(rgb: Vec<u8>, width: u32, height: u32, degrees: u32) -> (Vec<u
     (rotated.into_raw(), nw, nh)
 }
 
+/// 将 RGB 帧缩放到不超过 max_w x max_h，保持宽高比
+fn scale_down_rgb(rgb: &mut Vec<u8>, w: &mut u32, h: &mut u32, max_w: u32, max_h: u32) {
+    if *w <= max_w && *h <= max_h { return; }
+    let scale = (max_w as f32 / *w as f32).min(max_h as f32 / *h as f32);
+    let nw = ((*w as f32 * scale) as u32).max(1);
+    let nh = ((*h as f32 * scale) as u32).max(1);
+    if let Some(img) = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(*w, *h, std::mem::take(rgb)) {
+        let resized = imageops::resize(&img, nw, nh, imageops::FilterType::Triangle);
+        *rgb = resized.into_raw();
+        *w = nw; *h = nh;
+    }
+}
+
 pub fn apply_image_settings(rgb: &mut Vec<u8>, width: &mut u32, height: &mut u32, s: &ImageSettings) {
     apply_brightness(rgb, s.brightness);
     apply_contrast(rgb, s.contrast);
@@ -304,20 +317,22 @@ fn run_nokhwa_loop_idx(state: AppState, fixed_idx: usize) {
             let (mut w, mut h) = (rgb_image.width(), rgb_image.height());
             let mut rgb = rgb_image.into_raw();
 
+            // 降分辨率上限 1280x720，减少编码耗时和流量
+            scale_down_rgb(&mut rgb, &mut w, &mut h, 1280, 720);
+
             let img_settings = state.image_settings.lock().clone();
             apply_image_settings(&mut rgb, &mut w, &mut h, &img_settings);
 
-            // 更新帧通道（多摄像头分流）
-            let jpeg_for_stream = encode_jpeg(&rgb, w, h, 75);
-            let arc_stream = Arc::new(jpeg_for_stream);
-            {
-                let txs = state.frame_txs.lock();
-                if let Some(tx) = txs.get(&target_idx) { let _ = tx.send(arc_stream.clone()); }
-            }
-
-            // 主流处理（运动检测、录像等）
             if is_primary {
+                // 主流：运动检测 + 录像 + 广播（内部一次编码，同时发往 frame_tx 和 frame_txs）
                 process_and_broadcast(&state, &mut rgb, w, h, target_idx);
+            } else {
+                // 非主摄像头：只编码并发往对应分流通道
+                overlay_timestamp(&mut rgb, w, h);
+                let jpeg = encode_jpeg(&rgb, w, h, 75);
+                let arc = Arc::new(jpeg);
+                let txs = state.frame_txs.lock();
+                if let Some(tx) = txs.get(&target_idx) { let _ = tx.send(arc); }
             }
 
             // 更新 FPS
@@ -351,20 +366,23 @@ fn run_placeholder_briefly(state: &AppState, expected_idx: usize) {
 }
 
 fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32, cam_idx: usize) {
-    let (sensitivity, min_area, motion_detect) = {
+    use std::sync::atomic::AtomicU32;
+    static SKIP_CTR: AtomicU32 = AtomicU32::new(0);
+    let ctr = SKIP_CTR.fetch_add(1, Ordering::Relaxed);
+
+    let (sensitivity, min_area, motion_detect, frame_skip) = {
         let cam = state.camera.lock();
-        (cam.sensitivity, cam.min_area, cam.motion_detect)
+        (cam.sensitivity, cam.min_area, cam.motion_detect, cam.frame_skip.max(1))
     };
+    let should_detect = motion_detect && ctr % frame_skip == 0;
     let prev_gray = state.camera.lock().prev_gray.clone();
 
-    // 应用运动检测区域
-    let zones = state.motion_zones.lock().clone();
-    let mut rgb_for_motion = rgb.clone();
-    if !zones.is_empty() {
-        apply_motion_zones(&mut rgb_for_motion, w, h, &zones);
-    }
-
-    let (contours, detected, new_gray) = if motion_detect {
+    let (contours, detected, new_gray) = if should_detect {
+        let zones = state.motion_zones.lock().clone();
+        let mut rgb_for_motion = rgb.clone();
+        if !zones.is_empty() {
+            apply_motion_zones(&mut rgb_for_motion, w, h, &zones);
+        }
         motion::detect_motion(&mut rgb_for_motion, w, h, &prev_gray, sensitivity, min_area)
     } else {
         let g = motion::to_grayscale(rgb, w, h);
@@ -377,8 +395,14 @@ fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32, ca
     }
 
     overlay_timestamp(rgb, w, h);
-    let jpeg = encode_jpeg(rgb, w, h, 80);
+    let jpeg = encode_jpeg(rgb, w, h, 75);
     let jpeg_arc = Arc::new(jpeg.clone());
+
+    // 一次编码，同时发往主广播和该摄像头的分流通道
+    {
+        let txs = state.frame_txs.lock();
+        if let Some(tx) = txs.get(&cam_idx) { let _ = tx.send(jpeg_arc.clone()); }
+    }
 
     {
         let mut cam = state.camera.lock();
