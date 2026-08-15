@@ -52,8 +52,13 @@ async fn ip_whitelist_middleware(
 }
 
 fn ip_matches(ip: &str, pattern: &str) -> bool {
-    // 支持精确匹配和 CIDR 前缀匹配（如 "192.168.1."）
-    ip == pattern || ip.starts_with(pattern.trim_end_matches('*'))
+    // 只有以 '*' 结尾的模式才使用前缀匹配（如 "192.168.1.*"）
+    // 其余情况必须精确匹配，防止 192.168.1.1 匹配 192.168.1.10
+    if pattern.ends_with('*') {
+        ip.starts_with(pattern.trim_end_matches('*'))
+    } else {
+        ip == pattern
+    }
 }
 
 #[tokio::main]
@@ -67,7 +72,7 @@ async fn main() {
     }
     std::fs::create_dir_all(FACE_DIR).ok();
 
-    let state = AppState::new(cfg.camera.index);
+    let state = AppState::new(cfg.camera.index, &cfg.security);
 
     // 枚举摄像头
     {
@@ -84,6 +89,19 @@ async fn main() {
     {
         let s = state.clone();
         tokio::spawn(async move { camera::capture_loop(s).await });
+    }
+
+    // 为所有非主摄像头各启动一个独立预览流（多屏分屏用）
+    {
+        let primary = cfg.camera.index;
+        let cameras = state.available_cameras.lock().clone();
+        for (idx, _) in cameras {
+            let idx = idx as usize;
+            if idx != primary {
+                let s = state.clone();
+                tokio::spawn(async move { camera::capture_loop_for(s, idx).await });
+            }
+        }
     }
 
     // 启动定时任务

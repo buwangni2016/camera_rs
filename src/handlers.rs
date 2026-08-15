@@ -70,11 +70,15 @@ pub async fn login_post(
 ) -> impl IntoResponse {
     let ip = addr.ip().to_string();
     let now = now_secs();
+    let (password, max_attempts, lockout_secs) = {
+        let sec = state.security.lock();
+        (sec.password.clone(), sec.max_login_attempts, sec.lockout_secs)
+    };
 
     {
         let attempts = state.login_attempts.lock();
         if let Some(&(cnt, lockout_until)) = attempts.get(&ip) {
-            if cnt >= crate::MAX_LOGIN_ATTEMPTS && now < lockout_until {
+            if cnt >= max_attempts && now < lockout_until {
                 let remaining = lockout_until - now;
                 return axum::response::Redirect::to(
                     &format!("/login?error=locked&secs={}", remaining)
@@ -83,9 +87,7 @@ pub async fn login_post(
         }
     }
 
-    if crate::PASSWORD.is_empty()
-        || hash_password(crate::PASSWORD) == hash_password(&form.password)
-    {
+    if password.is_empty() || hash_password(&password) == hash_password(&form.password) {
         state.login_attempts.lock().remove(&ip);
         let mut c = Cookie::new("session", "ok");
         c.set_path("/");
@@ -96,8 +98,8 @@ pub async fn login_post(
         let mut attempts = state.login_attempts.lock();
         let entry = attempts.entry(ip).or_insert((0, 0));
         entry.0 += 1;
-        if entry.0 >= crate::MAX_LOGIN_ATTEMPTS {
-            entry.1 = now + crate::LOCKOUT_SECS;
+        if entry.0 >= max_attempts {
+            entry.1 = now + lockout_secs;
         }
     }
     axum::response::Redirect::to("/login?error=1").into_response()
@@ -128,15 +130,27 @@ pub async fn index(
 //  MJPEG 视频流
 // ============================================================
 
+#[derive(Deserialize, Default)]
+pub struct CamQuery { cam: Option<usize> }
+
 pub async fn video_stream(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
+    Query(q): Query<CamQuery>,
 ) -> impl IntoResponse {
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    let rx = state.frame_tx.subscribe();
+    let cam_idx = q.cam.unwrap_or_else(|| state.camera_idx.load(Ordering::Relaxed));
+    let rx = {
+        let txs = state.frame_txs.lock();
+        if let Some(tx) = txs.get(&cam_idx) {
+            tx.subscribe()
+        } else {
+            state.frame_tx.subscribe()
+        }
+    };
     let stream = BroadcastStream::new(rx).filter_map(|result| {
         result.ok().map(|jpeg| {
             let mut chunk = Vec::new();
@@ -403,6 +417,7 @@ pub struct StatsResp {
     unknown_count: u64,
     unknown_face: bool,
     camera_idx: usize,
+    fps: f32,
 }
 
 pub async fn get_stats(State(state): State<AppState>, _jar: PrivateCookieJar) -> Json<StatsResp> {
@@ -414,6 +429,7 @@ pub async fn get_stats(State(state): State<AppState>, _jar: PrivateCookieJar) ->
         unknown_count: cam.unknown_count,
         unknown_face: false,
         camera_idx: state.camera_idx.load(Ordering::Relaxed),
+        fps: cam.fps_current,
     })
 }
 
@@ -930,18 +946,19 @@ pub async fn import_config(
     Json(data): Json<serde_json::Value>,
 ) -> Json<OkResp> {
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
-    if let Some(v) = data.get("notify")        { if let Ok(c) = serde_json::from_value(v.clone()) { *state.notify_cfg.lock() = c; } }
-    if let Some(v) = data.get("onedrive")      { if let Ok(c) = serde_json::from_value(v.clone()) { *state.onedrive_cfg.lock() = c; } }
-    if let Some(v) = data.get("gdrive")        { if let Ok(c) = serde_json::from_value(v.clone()) { *state.gdrive_cfg.lock() = c; } }
-    if let Some(v) = data.get("ftp")           { if let Ok(c) = serde_json::from_value(v.clone()) { *state.ftp_cfg.lock() = c; } }
-    if let Some(v) = data.get("schedule")      { if let Ok(r) = serde_json::from_value(v.clone()) { *state.schedule_rules.lock() = r; } }
-    if let Some(v) = data.get("alert_rule")    { if let Ok(r) = serde_json::from_value(v.clone()) { *state.alert_time_rule.lock() = r; } }
-    if let Some(v) = data.get("motion_zones")  { if let Ok(z) = serde_json::from_value(v.clone()) { *state.motion_zones.lock() = z; } }
-    if let Some(v) = data.get("watermark")     { if let Ok(c) = serde_json::from_value(v.clone()) { *state.watermark_cfg.lock() = c; } }
-    if let Some(v) = data.get("privacy_masks") { if let Ok(m) = serde_json::from_value(v.clone()) { *state.privacy_masks.lock() = m; } }
-    if let Some(v) = data.get("rtsp_cameras")  { if let Ok(c) = serde_json::from_value(v.clone()) { *state.rtsp_cameras.lock() = c; } }
-    if let Some(v) = data.get("security")      { if let Ok(c) = serde_json::from_value(v.clone()) { *state.security.lock() = c; } }
-    if let Some(v) = data.get("record_limits") { if let Ok(c) = serde_json::from_value(v.clone()) { *state.record_limits.lock() = c; } }
+    if let Some(v) = data.get("notify")          { if let Ok(c) = serde_json::from_value(v.clone()) { *state.notify_cfg.lock() = c; } }
+    if let Some(v) = data.get("onedrive")        { if let Ok(c) = serde_json::from_value(v.clone()) { *state.onedrive_cfg.lock() = c; } }
+    if let Some(v) = data.get("gdrive")          { if let Ok(c) = serde_json::from_value(v.clone()) { *state.gdrive_cfg.lock() = c; } }
+    if let Some(v) = data.get("ftp")             { if let Ok(c) = serde_json::from_value(v.clone()) { *state.ftp_cfg.lock() = c; } }
+    if let Some(v) = data.get("schedule")        { if let Ok(r) = serde_json::from_value(v.clone()) { *state.schedule_rules.lock() = r; } }
+    if let Some(v) = data.get("alert_rule")      { if let Ok(r) = serde_json::from_value(v.clone()) { *state.alert_time_rule.lock() = r; } }
+    if let Some(v) = data.get("motion_zones")    { if let Ok(z) = serde_json::from_value(v.clone()) { *state.motion_zones.lock() = z; } }
+    if let Some(v) = data.get("image_settings")  { if let Ok(c) = serde_json::from_value(v.clone()) { *state.image_settings.lock() = c; } }
+    if let Some(v) = data.get("watermark")       { if let Ok(c) = serde_json::from_value(v.clone()) { *state.watermark_cfg.lock() = c; } }
+    if let Some(v) = data.get("privacy_masks")   { if let Ok(m) = serde_json::from_value(v.clone()) { *state.privacy_masks.lock() = m; } }
+    if let Some(v) = data.get("rtsp_cameras")    { if let Ok(c) = serde_json::from_value(v.clone()) { *state.rtsp_cameras.lock() = c; } }
+    if let Some(v) = data.get("security")        { if let Ok(c) = serde_json::from_value(v.clone()) { *state.security.lock() = c; } }
+    if let Some(v) = data.get("record_limits")   { if let Ok(c) = serde_json::from_value(v.clone()) { *state.record_limits.lock() = c; } }
     Json(OkResp { ok: true, error: None })
 }
 

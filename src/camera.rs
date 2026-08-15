@@ -364,12 +364,17 @@ fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32, ca
         apply_motion_zones(&mut rgb_for_motion, w, h, &zones);
     }
 
-    let (_, detected, new_gray) = if motion_detect {
+    let (contours, detected, new_gray) = if motion_detect {
         motion::detect_motion(&mut rgb_for_motion, w, h, &prev_gray, sensitivity, min_area)
     } else {
         let g = motion::to_grayscale(rgb, w, h);
         (vec![], false, g)
     };
+
+    if detected && !contours.is_empty() {
+        let rects: Vec<(u32, u32, u32, u32)> = contours.iter().map(|r| (r.x, r.y, r.w, r.h)).collect();
+        crate::heatmap::record_motion(state, &rects, w, h);
+    }
 
     overlay_timestamp(rgb, w, h);
     let jpeg = encode_jpeg(rgb, w, h, 80);
@@ -389,16 +394,21 @@ fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32, ca
                 cam.motion_count += 1;
                 cam.last_motion_save = t;
 
-                let (enabled, on_motion) = {
-                    let ecfg = state.email_cfg.lock();
-                    (ecfg.enabled, ecfg.on_motion)
+                let motion_count = cam.motion_count;
+                let should_send_email = {
+                    let mut ecfg = state.email_cfg.lock();
+                    if ecfg.enabled && ecfg.on_motion && now_secs() - ecfg.last_sent >= ecfg.cooldown {
+                        ecfg.last_sent = now_secs();
+                        true
+                    } else {
+                        false
+                    }
                 };
-                if enabled && on_motion {
+                if should_send_email {
                     let cfg = state.email_cfg.lock().clone();
-                    let count = cam.motion_count;
                     let p = path.clone();
                     std::thread::spawn(move || {
-                        crate::email::send_motion_alert_blocking(cfg, count, &p).ok();
+                        crate::email::send_motion_alert_direct(&cfg, motion_count, &p).ok();
                     });
                 }
 
@@ -459,6 +469,10 @@ pub fn save_mjpeg_avi(frames: &[Vec<u8>], fps: f64, path: &str) -> std::io::Resu
     let frame_count  = frames.len() as u32;
     let fps_u        = fps as u32;
     let us_per_frame = (1_000_000.0 / fps) as u32;
+    let (width, height) = frames.first()
+        .and_then(|f| decode_jpeg(f))
+        .map(|(w, h, _)| (w, h))
+        .unwrap_or((0, 0));
 
     let mut movi: Vec<u8> = Vec::new();
     let mut offsets: Vec<(u32, u32)> = Vec::new();
@@ -507,7 +521,7 @@ pub fn save_mjpeg_avi(frames: &[Vec<u8>], fps: f64, path: &str) -> std::io::Resu
 
     mowi_tag(&mut buf, b"strf"); mowi_u32(&mut buf, 40);
     mowi_u32(&mut buf, 40);
-    mowi_u32(&mut buf, 0); mowi_u32(&mut buf, 0);
+    mowi_u32(&mut buf, width); mowi_u32(&mut buf, height);
     buf.extend_from_slice(&1u16.to_le_bytes());
     buf.extend_from_slice(&24u16.to_le_bytes());
     mowi_tag(&mut buf, b"MJPG");

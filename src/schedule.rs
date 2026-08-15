@@ -7,6 +7,11 @@
 use chrono::{Datelike, Local, Timelike, Weekday};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleRule {
@@ -66,40 +71,95 @@ fn weekday_bit(wd: Weekday) -> u8 {
 
 /// 后台定时任务循环（每分钟执行一次）
 pub async fn schedule_loop(state: crate::state::AppState) {
+    // 记录上一轮哪些规则处于活跃状态，用于检测"进入窗口"边沿
+    let mut prev_active: std::collections::HashSet<usize> = std::collections::HashSet::new();
     loop {
-        apply_schedules_async(&state).await;
+        apply_schedules_async(&state, &mut prev_active).await;
         tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
     }
 }
 
-async fn apply_schedules_async(state: &crate::state::AppState) {
+async fn apply_schedules_async(
+    state: &crate::state::AppState,
+    prev_active: &mut std::collections::HashSet<usize>,
+) {
     let rules = state.schedule_rules.lock().clone();
-    for rule in &rules {
-        if !rule.is_active_now() { continue; }
+    let mut cur_active = std::collections::HashSet::new();
+
+    for (i, rule) in rules.iter().enumerate() {
+        let active = rule.is_active_now();
+        if active { cur_active.insert(i); }
+
         match rule.action {
-            ScheduleAction::DailyReport => {
-                let s = state.clone();
-                tokio::spawn(async move { crate::report::send_daily_report(&s).await });
-            }
-            ScheduleAction::ClearHeatmap => {
-                crate::heatmap::clear_heatmap(state);
-                tracing::info!("定时任务「{}」: 已清空热力图", rule.name);
-            }
-            ScheduleAction::AutoUpload => {
-                let jpeg = state.camera.lock().latest_jpeg.clone();
-                if let Some(j) = jpeg {
-                    let od = state.onedrive_cfg.lock().clone();
-                    let gd = state.gdrive_cfg.lock().clone();
-                    let ft = state.ftp_cfg.lock().clone();
-                    let fname = format!("auto/{}.jpg", chrono::Local::now().format("%Y%m%d_%H%M%S"));
-                    tokio::spawn(async move {
-                        crate::upload::upload_all(&od, &gd, &ft, &fname, &j, crate::upload::UploadKind::Photo).await;
-                    });
+            // 以下为"一次性触发"动作：只在刚进入激活窗口时执行一次
+            ScheduleAction::DailyReport | ScheduleAction::ClearHeatmap | ScheduleAction::AutoUpload => {
+                if !active || prev_active.contains(&i) { continue; }
+                match rule.action {
+                    ScheduleAction::DailyReport => {
+                        let s = state.clone();
+                        tokio::spawn(async move { crate::report::send_daily_report(&s).await });
+                    }
+                    ScheduleAction::ClearHeatmap => {
+                        crate::heatmap::clear_heatmap(state);
+                        tracing::info!("定时任务「{}」: 已清空热力图", rule.name);
+                    }
+                    ScheduleAction::AutoUpload => {
+                        let jpeg = state.camera.lock().latest_jpeg.clone();
+                        if let Some(j) = jpeg {
+                            let od = state.onedrive_cfg.lock().clone();
+                            let gd = state.gdrive_cfg.lock().clone();
+                            let ft = state.ftp_cfg.lock().clone();
+                            let fname = format!("auto/{}.jpg", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+                            tokio::spawn(async move {
+                                crate::upload::upload_all(&od, &gd, &ft, &fname, &j, crate::upload::UploadKind::Photo).await;
+                            });
+                        }
+                    }
+                    _ => {}
                 }
             }
-            _ => apply_sync_rule(state, rule),
+            // StartRecord：进入窗口时开始，幂等
+            ScheduleAction::StartRecord => {
+                if !active { continue; }
+                let mut cam = state.camera.lock();
+                if !cam.recording {
+                    cam.recording = true;
+                    cam.record_start = Some(now_secs());
+                    cam.record_frames.clear();
+                    tracing::info!("定时任务「{}」: 已开始录像", rule.name);
+                }
+            }
+            // StopRecord：离开窗口时停止并保存帧
+            ScheduleAction::StopRecord => {
+                // 当前不在窗口 且 上一轮在窗口 → 刚离开，保存录像
+                if active || !prev_active.contains(&i) { continue; }
+                let frames = {
+                    let mut cam = state.camera.lock();
+                    if cam.recording {
+                        cam.recording = false;
+                        Some(std::mem::take(&mut cam.record_frames))
+                    } else { None }
+                };
+                if let Some(frames) = frames {
+                    if !frames.is_empty() {
+                        let path = format!("{}/videos/{}.avi", crate::SAVE_DIR,
+                            chrono::Local::now().format("%Y%m%d_%H%M%S"));
+                        tokio::task::spawn_blocking(move || {
+                            crate::camera::save_mjpeg_avi(&frames, crate::RECORD_FPS, &path).ok();
+                        });
+                        tracing::info!("定时任务「{}」: 已停止录像并保存", rule.name);
+                    }
+                }
+            }
+            // 其余状态类动作：幂等，每轮都可执行
+            _ => {
+                if !active { continue; }
+                apply_sync_rule(state, rule);
+            }
         }
     }
+
+    *prev_active = cur_active;
 }
 
 fn apply_sync_rule(state: &crate::state::AppState, rule: &ScheduleRule) {
@@ -125,21 +185,7 @@ fn apply_sync_rule(state: &crate::state::AppState, rule: &ScheduleRule) {
         ScheduleAction::EnableNotify => {
             state.notify_suppressed.store(false, Ordering::Relaxed);
         }
-        ScheduleAction::StartRecord => {
-            let mut cam = state.camera.lock();
-            if !cam.recording {
-                cam.recording = true;
-                tracing::info!("定时任务「{}」: 已开始录像", rule.name);
-            }
-        }
-        ScheduleAction::StopRecord => {
-            let mut cam = state.camera.lock();
-            if cam.recording {
-                cam.recording = false;
-                tracing::info!("定时任务「{}」: 已停止录像", rule.name);
-            }
-        }
-        // Async actions (DailyReport, ClearHeatmap, AutoUpload) handled in apply_schedules_async
+        // StartRecord/StopRecord/DailyReport/ClearHeatmap/AutoUpload 均在 apply_schedules_async 处理
         _ => {}
     }
 }

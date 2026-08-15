@@ -89,10 +89,18 @@ pub struct SecurityConfig {
     pub https_enabled:       bool,
     pub cert_path:           String,
     pub key_path:            String,
+    /// 登录密码（来自 config.toml，运行时可通过 /security_config 修改）
+    pub password:            String,
+    pub max_login_attempts:  u32,
+    pub lockout_secs:        u64,
 }
 impl Default for SecurityConfig {
     fn default() -> Self {
-        Self { ip_whitelist: vec![], https_enabled: false, cert_path: "cert.pem".into(), key_path: "key.pem".into() }
+        Self {
+            ip_whitelist: vec![], https_enabled: false,
+            cert_path: "cert.pem".into(), key_path: "key.pem".into(),
+            password: "admin".into(), max_login_attempts: 5, lockout_secs: 900,
+        }
     }
 }
 
@@ -313,7 +321,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(camera_idx: usize) -> Self {
+    pub fn new(camera_idx: usize, sec_cfg: &crate::config::SecurityConfig) -> Self {
         let (frame_tx, _)   = broadcast::channel(4);
         let (ws_tx, _)      = broadcast::channel(32);
         let mut frame_txs   = HashMap::new();
@@ -345,7 +353,12 @@ impl AppState {
             ftp_cfg:            Arc::new(Mutex::new(FtpConfig::default())),
             users:              Arc::new(Mutex::new(users)),
             api_cfg:            Arc::new(Mutex::new(ApiConfig::default())),
-            security:           Arc::new(Mutex::new(SecurityConfig::default())),
+            security:           Arc::new(Mutex::new(SecurityConfig {
+                password: sec_cfg.password.clone(),
+                max_login_attempts: sec_cfg.max_login_attempts,
+                lockout_secs: sec_cfg.lockout_secs,
+                ..SecurityConfig::default()
+            })),
             login_attempts:     Arc::new(Mutex::new(HashMap::new())),
             schedule_rules:     Arc::new(Mutex::new(Vec::new())),
             timelapse_cfg:      Arc::new(Mutex::new(TimelapseConfig::default())),

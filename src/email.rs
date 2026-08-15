@@ -60,7 +60,18 @@ fn build_plain(cfg: &EmailConfig, subject: &str, body: &str) -> Result<Message, 
         .map_err(|e| e.to_string())
 }
 
-/// 从摄像头线程（同步）调用的运动告警（忽略冷却错误）
+/// 从摄像头线程（同步）调用的运动告警。
+/// 调用方负责冷却检测和更新全局 last_sent，本函数直接发送。
+pub fn send_motion_alert_direct(cfg: &EmailConfig, count: u64, image_path: &str) -> Result<(), String> {
+    let body = format!(
+        "时间: {}\n已触发第 {} 次移动侦测",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        count
+    );
+    send_impl(cfg, "移动侦测告警", &body, Some(image_path))
+}
+
+/// 保留旧接口以兼容直接调用（自带冷却检查，但 last_sent 只更新本地副本）
 pub fn send_motion_alert_blocking(
     mut cfg: EmailConfig,
     count: u64,
@@ -70,12 +81,7 @@ pub fn send_motion_alert_blocking(
         return Err("冷却中".into());
     }
     cfg.last_sent = now_secs();
-    let body = format!(
-        "时间: {}\n已触发第 {} 次移动侦测",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-        count
-    );
-    send_impl(&cfg, "移动侦测告警", &body, Some(image_path))
+    send_motion_alert_direct(&cfg, count, image_path)
 }
 
 /// 从 Web 处理器调用（更新全局冷却时间）
