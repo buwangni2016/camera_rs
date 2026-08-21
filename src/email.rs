@@ -2,27 +2,42 @@
  * 邮件告警模块（lettre 0.11）
  */
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::state::{AppState, EmailConfig};
 use lettre::{
-    Message, SmtpTransport, Transport,
     message::{header::ContentType, Attachment, MultiPart, SinglePart},
     transport::smtp::authentication::Credentials,
+    Message, SmtpTransport, Transport,
 };
-use crate::state::{AppState, EmailConfig};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
-fn send_impl(cfg: &EmailConfig, subject: &str, body: &str, image_path: Option<&str>) -> Result<(), String> {
+fn send_impl(
+    cfg: &EmailConfig,
+    subject: &str,
+    body: &str,
+    image_path: Option<&str>,
+) -> Result<(), String> {
     if !cfg.enabled || cfg.from.is_empty() || cfg.password.is_empty() {
         return Err("邮件未配置".into());
     }
     let email = if let Some(path) = image_path {
         if let Ok(img_data) = std::fs::read(path) {
             Message::builder()
-                .from(cfg.from.parse().map_err(|e: lettre::address::AddressError| e.to_string())?)
-                .to(cfg.to.parse().map_err(|e: lettre::address::AddressError| e.to_string())?)
+                .from(
+                    cfg.from
+                        .parse()
+                        .map_err(|e: lettre::address::AddressError| e.to_string())?,
+                )
+                .to(cfg
+                    .to
+                    .parse()
+                    .map_err(|e: lettre::address::AddressError| e.to_string())?)
                 .subject(subject)
                 .multipart(
                     MultiPart::mixed()
@@ -52,8 +67,15 @@ fn send_impl(cfg: &EmailConfig, subject: &str, body: &str, image_path: Option<&s
 
 fn build_plain(cfg: &EmailConfig, subject: &str, body: &str) -> Result<Message, String> {
     Message::builder()
-        .from(cfg.from.parse().map_err(|e: lettre::address::AddressError| e.to_string())?)
-        .to(cfg.to.parse().map_err(|e: lettre::address::AddressError| e.to_string())?)
+        .from(
+            cfg.from
+                .parse()
+                .map_err(|e: lettre::address::AddressError| e.to_string())?,
+        )
+        .to(cfg
+            .to
+            .parse()
+            .map_err(|e: lettre::address::AddressError| e.to_string())?)
         .subject(subject)
         .header(ContentType::TEXT_PLAIN)
         .body(body.to_string())
@@ -62,7 +84,11 @@ fn build_plain(cfg: &EmailConfig, subject: &str, body: &str) -> Result<Message, 
 
 /// 从摄像头线程（同步）调用的运动告警。
 /// 调用方负责冷却检测和更新全局 last_sent，本函数直接发送。
-pub fn send_motion_alert_direct(cfg: &EmailConfig, count: u64, image_path: &str) -> Result<(), String> {
+pub fn send_motion_alert_direct(
+    cfg: &EmailConfig,
+    count: u64,
+    image_path: &str,
+) -> Result<(), String> {
     let body = format!(
         "时间: {}\n已触发第 {} 次移动侦测",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),

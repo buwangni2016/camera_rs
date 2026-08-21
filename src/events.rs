@@ -32,13 +32,13 @@ pub enum EventKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
-    pub id:         u64,
-    pub timestamp:  String,      // ISO 8601
-    pub kind:       EventKind,
+    pub id: u64,
+    pub timestamp: String, // ISO 8601
+    pub kind: EventKind,
     pub camera_idx: usize,
-    pub message:    String,
-    pub thumb_path: Option<String>,  // 缩略图路径（相对于 SAVE_DIR）
-    pub extra:      Option<serde_json::Value>,
+    pub message: String,
+    pub thumb_path: Option<String>, // 缩略图路径（相对于 SAVE_DIR）
+    pub extra: Option<serde_json::Value>,
 }
 
 impl Event {
@@ -74,8 +74,8 @@ pub struct EventLogger {
 
 struct Inner {
     log_path: PathBuf,
-    events:   Vec<Event>,
-    next_id:  u64,
+    events: Vec<Event>,
+    next_id: u64,
 }
 
 impl EventLogger {
@@ -83,7 +83,11 @@ impl EventLogger {
         let log_path = PathBuf::from(save_dir).join("events.jsonl");
         let (events, next_id) = load_recent(&log_path, MAX_EVENTS_IN_MEMORY);
         Self {
-            inner: Arc::new(Mutex::new(Inner { log_path, events, next_id })),
+            inner: Arc::new(Mutex::new(Inner {
+                log_path,
+                events,
+                next_id,
+            })),
         }
     }
 
@@ -94,7 +98,9 @@ impl EventLogger {
 
         // 持久化到文件
         if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true).append(true).open(&g.log_path)
+            .create(true)
+            .append(true)
+            .open(&g.log_path)
         {
             if let Ok(line) = serde_json::to_string(&event) {
                 writeln!(f, "{}", line).ok();
@@ -121,7 +127,9 @@ impl EventLogger {
     /// 按类型过滤
     pub fn by_kind(&self, kind_str: &str, limit: usize) -> Vec<Event> {
         let g = self.inner.lock().unwrap();
-        g.events.iter().rev()
+        g.events
+            .iter()
+            .rev()
             .filter(|e| format!("{:?}", e.kind).to_lowercase() == kind_str.to_lowercase())
             .take(limit)
             .cloned()
@@ -143,7 +151,9 @@ fn load_recent(path: &PathBuf, limit: usize) -> (Vec<Event>, u64) {
     if let Ok(content) = std::fs::read_to_string(path) {
         for line in content.lines() {
             if let Ok(e) = serde_json::from_str::<Event>(line) {
-                if e.id > max_id { max_id = e.id; }
+                if e.id > max_id {
+                    max_id = e.id;
+                }
                 events.push(e);
             }
         }

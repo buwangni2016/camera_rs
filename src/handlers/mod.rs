@@ -13,23 +13,23 @@
  */
 
 pub mod auth;
-pub mod stream;
 pub mod camera_ctrl;
-pub mod files;
 pub mod config;
-pub mod rest_api;
-pub mod system;
+pub mod files;
 pub mod heatmap;
+pub mod rest_api;
+pub mod stream;
+pub mod system;
 
 // 将所有子模块的公开符号提升到 handlers:: 顶层，保持 `use handlers::*` 兼容性
 pub use auth::*;
-pub use stream::*;
 pub use camera_ctrl::*;
-pub use files::*;
 pub use config::*;
-pub use rest_api::*;
-pub use system::*;
+pub use files::*;
 pub use heatmap::*;
+pub use rest_api::*;
+pub use stream::*;
+pub use system::*;
 
 // ============================================================
 //  共享类型与辅助函数（所有子模块可见）
@@ -46,7 +46,9 @@ pub struct OkResp {
 }
 
 #[derive(Deserialize)]
-pub struct ValQuery { pub val: Option<String> }
+pub struct ValQuery {
+    pub val: Option<String>,
+}
 
 #[derive(Deserialize, Default)]
 pub struct EventQuery {
@@ -55,12 +57,17 @@ pub struct EventQuery {
 }
 
 pub(crate) fn is_authed(jar: &PrivateCookieJar) -> bool {
-    jar.get("session").map(|c| c.value() == "ok").unwrap_or(false)
+    jar.get("session")
+        .map(|c| c.value() == "ok")
+        .unwrap_or(false)
 }
 
 pub(crate) fn now_secs() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 pub(crate) fn ts_str() -> String {
@@ -70,13 +77,13 @@ pub(crate) fn ts_str() -> String {
 /// 安全响应版 SecurityConfig：绝不回传明文密码
 #[derive(Serialize)]
 pub struct SecurityConfigSafe {
-    pub ip_whitelist:       Vec<String>,
-    pub https_enabled:      bool,
-    pub cert_path:          String,
-    pub key_path:           String,
-    pub has_password:       bool,   // 只暴露"是否设置了密码"
+    pub ip_whitelist: Vec<String>,
+    pub https_enabled: bool,
+    pub cert_path: String,
+    pub key_path: String,
+    pub has_password: bool, // 只暴露"是否设置了密码"
     pub max_login_attempts: u32,
-    pub lockout_secs:       u64,
+    pub lockout_secs: u64,
 }
 
 impl From<&crate::state::SecurityConfig> for SecurityConfigSafe {

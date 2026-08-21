@@ -6,8 +6,8 @@ use axum::{
 };
 use axum_extra::extract::cookie::PrivateCookieJar;
 
-use crate::state::AppState;
 use super::{is_authed, EventQuery, OkResp};
+use crate::state::AppState;
 
 use sysinfo;
 
@@ -20,19 +20,26 @@ pub async fn get_events(
     Query(q): Query<EventQuery>,
     jar: PrivateCookieJar,
 ) -> Json<serde_json::Value> {
-    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(serde_json::json!([])); }
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return Json(serde_json::json!([]));
+    }
     let limit = q.limit.unwrap_or(100).min(500);
     let events = match q.kind.as_deref() {
         Some(k) => s.event_log.by_kind(k, limit),
-        None    => s.event_log.recent(limit),
+        None => s.event_log.recent(limit),
     };
     Json(serde_json::json!({"events": events, "total": s.event_log.count()}))
 }
 
 pub async fn clear_events(State(s): State<AppState>, jar: PrivateCookieJar) -> Json<OkResp> {
-    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return Json(OkResp::default());
+    }
     s.event_log.clear();
-    Json(OkResp { ok: true, error: None })
+    Json(OkResp {
+        ok: true,
+        error: None,
+    })
 }
 
 // ============================================================
@@ -51,11 +58,19 @@ pub async fn health_check(State(state): State<AppState>) -> Json<serde_json::Val
 }
 
 pub async fn sys_info(State(_): State<AppState>, jar: PrivateCookieJar) -> Json<serde_json::Value> {
-    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(serde_json::json!({})); }
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() {
+        return Json(serde_json::json!({}));
+    }
     let mut sys = sysinfo::System::new_all();
     sys.refresh_all();
-    let disk_total: u64 = sysinfo::Disks::new_with_refreshed_list().iter().map(|d| d.total_space()).sum();
-    let disk_used: u64  = sysinfo::Disks::new_with_refreshed_list().iter().map(|d| d.total_space() - d.available_space()).sum();
+    let disk_total: u64 = sysinfo::Disks::new_with_refreshed_list()
+        .iter()
+        .map(|d| d.total_space())
+        .sum();
+    let disk_used: u64 = sysinfo::Disks::new_with_refreshed_list()
+        .iter()
+        .map(|d| d.total_space() - d.available_space())
+        .sum();
     Json(serde_json::json!({
         "cpu_usage":  sys.global_cpu_usage(),
         "mem_total":  sys.total_memory(),
@@ -96,5 +111,9 @@ pub async fn pwa_manifest() -> impl IntoResponse {
             {"src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📷</text></svg>", "type": "image/svg+xml", "sizes": "any"}
         ]
     });
-    ([(header::CONTENT_TYPE, "application/manifest+json")], manifest.to_string()).into_response()
+    (
+        [(header::CONTENT_TYPE, "application/manifest+json")],
+        manifest.to_string(),
+    )
+        .into_response()
 }

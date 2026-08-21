@@ -57,17 +57,16 @@ pub fn box_blur(src: &[u8], width: u32, height: u32) -> Vec<u8> {
 
     // --- Pass 1: 横向 1x3 均值（rayon 行并行）---
     let mut tmp = vec![0u8; w * h];
-    tmp.par_chunks_mut(w)
-        .enumerate()
-        .for_each(|(y, row_out)| {
-            let row_in = &src[y * w..(y + 1) * w];
-            // 边界像素直接复制
-            row_out[0]     = row_in[0];
-            row_out[w - 1] = row_in[w - 1];
-            for x in 1..(w - 1) {
-                row_out[x] = ((row_in[x - 1] as u32 + row_in[x] as u32 + row_in[x + 1] as u32) / 3) as u8;
-            }
-        });
+    tmp.par_chunks_mut(w).enumerate().for_each(|(y, row_out)| {
+        let row_in = &src[y * w..(y + 1) * w];
+        // 边界像素直接复制
+        row_out[0] = row_in[0];
+        row_out[w - 1] = row_in[w - 1];
+        for x in 1..(w - 1) {
+            row_out[x] =
+                ((row_in[x - 1] as u32 + row_in[x] as u32 + row_in[x + 1] as u32) / 3) as u8;
+        }
+    });
 
     // --- Pass 2: 纵向 3x1 均值（顺序，无法简单并行因列跨行） ---
     let mut dst = vec![0u8; w * h];
@@ -127,7 +126,11 @@ struct UnionFind {
 }
 
 impl UnionFind {
-    fn new(n: usize) -> Self { Self { parent: (0..n).collect() } }
+    fn new(n: usize) -> Self {
+        Self {
+            parent: (0..n).collect(),
+        }
+    }
     fn find(&mut self, x: usize) -> usize {
         if self.parent[x] != x {
             self.parent[x] = self.find(self.parent[x]);
@@ -137,7 +140,9 @@ impl UnionFind {
     fn union(&mut self, a: usize, b: usize) {
         let ra = self.find(a);
         let rb = self.find(b);
-        if ra != rb { self.parent[ra] = rb; }
+        if ra != rb {
+            self.parent[ra] = rb;
+        }
     }
 }
 
@@ -152,17 +157,34 @@ pub fn find_contour_rects(mask: &[u8], width: u32, height: u32) -> Vec<Rect> {
     // 第一遍扫描：打标签
     for y in 0..h {
         for x in 0..w {
-            if mask[y * w + x] == 0 { continue; }
+            if mask[y * w + x] == 0 {
+                continue;
+            }
             let idx = y * w + x;
 
-            let above = if y > 0 && mask[(y-1)*w+x] > 0 { labels[(y-1)*w+x] } else { 0 };
-            let left  = if x > 0 && mask[y*w+x-1]  > 0 { labels[y*w+x-1]  } else { 0 };
+            let above = if y > 0 && mask[(y - 1) * w + x] > 0 {
+                labels[(y - 1) * w + x]
+            } else {
+                0
+            };
+            let left = if x > 0 && mask[y * w + x - 1] > 0 {
+                labels[y * w + x - 1]
+            } else {
+                0
+            };
 
             labels[idx] = match (above, left) {
-                (0, 0) => { let l = next_label; next_label += 1; l }
+                (0, 0) => {
+                    let l = next_label;
+                    next_label += 1;
+                    l
+                }
                 (a, 0) => a,
                 (0, l) => l,
-                (a, l) => { uf.union(a, l); a }
+                (a, l) => {
+                    uf.union(a, l);
+                    a
+                }
             };
         }
     }
@@ -174,7 +196,9 @@ pub fn find_contour_rects(mask: &[u8], width: u32, height: u32) -> Vec<Rect> {
     for y in 0..h {
         for x in 0..w {
             let raw = labels[y * w + x];
-            if raw == 0 { continue; }
+            if raw == 0 {
+                continue;
+            }
             let root = uf.find(raw);
             let e = boxes.entry(root).or_insert((x, y, x, y));
             e.0 = e.0.min(x);
@@ -184,12 +208,15 @@ pub fn find_contour_rects(mask: &[u8], width: u32, height: u32) -> Vec<Rect> {
         }
     }
 
-    boxes.values().map(|&(x0, y0, x1, y1)| Rect {
-        x: x0 as u32,
-        y: y0 as u32,
-        w: (x1 - x0 + 1) as u32,
-        h: (y1 - y0 + 1) as u32,
-    }).collect()
+    boxes
+        .values()
+        .map(|&(x0, y0, x1, y1)| Rect {
+            x: x0 as u32,
+            y: y0 as u32,
+            w: (x1 - x0 + 1) as u32,
+            h: (y1 - y0 + 1) as u32,
+        })
+        .collect()
 }
 
 /// 在 RGB 图像上画矩形（红色，2px 边框）
@@ -201,21 +228,35 @@ pub fn draw_rect(rgb: &mut [u8], width: u32, height: u32, r: &Rect) {
 
     let set_pixel = |rgb: &mut [u8], x: usize, y: usize| {
         let b = (y * w + x) * 3;
-        rgb[b] = 255; rgb[b+1] = 0; rgb[b+2] = 0;
+        rgb[b] = 255;
+        rgb[b + 1] = 0;
+        rgb[b + 2] = 0;
     };
 
     for x in rx..=x1 {
-        if ry < h { set_pixel(rgb, x, ry); }
-        if y1 < h { set_pixel(rgb, x, y1); }
+        if ry < h {
+            set_pixel(rgb, x, ry);
+        }
+        if y1 < h {
+            set_pixel(rgb, x, y1);
+        }
     }
     for y in ry..=y1 {
-        if rx < w { set_pixel(rgb, rx, y); }
-        if x1 < w { set_pixel(rgb, x1, y); }
+        if rx < w {
+            set_pixel(rgb, rx, y);
+        }
+        if x1 < w {
+            set_pixel(rgb, x1, y);
+        }
     }
     // 2px 宽
     for x in rx..=x1 {
-        if ry+1 < h { set_pixel(rgb, x, ry+1); }
-        if y1 > 0 && y1-1 < h { set_pixel(rgb, x, y1-1); }
+        if ry + 1 < h {
+            set_pixel(rgb, x, ry + 1);
+        }
+        if y1 > 0 && y1 - 1 < h {
+            set_pixel(rgb, x, y1 - 1);
+        }
     }
 }
 
@@ -240,7 +281,8 @@ pub fn detect_motion(
     let dilated = dilate(&diff, width, height);
     let rects = find_contour_rects(&dilated, width, height);
 
-    let filtered: Vec<Rect> = rects.into_iter()
+    let filtered: Vec<Rect> = rects
+        .into_iter()
         .filter(|r| r.w * r.h >= min_area)
         .collect();
 
@@ -286,7 +328,11 @@ mod tests {
         let rgb = solid_rgb(2, 2, 255, 0, 0);
         let gray = to_grayscale(&rgb, 2, 2);
         // (255*77) >> 8 = 76
-        assert!(gray.iter().all(|&v| v == 76), "expected 76, got {}", gray[0]);
+        assert!(
+            gray.iter().all(|&v| v == 76),
+            "expected 76, got {}",
+            gray[0]
+        );
     }
 
     #[test]
@@ -327,7 +373,7 @@ mod tests {
         let blurred = box_blur(&src, w as u32, h as u32);
         // 中心点应被平滑到 255/9 ≈ 28
         assert!(blurred[3 * w + 3] < 255, "center should be smoothed");
-        assert!(blurred[3 * w + 3] > 0,   "center should retain some signal");
+        assert!(blurred[3 * w + 3] > 0, "center should retain some signal");
     }
 
     // --- find_contour_rects ---
@@ -365,9 +411,17 @@ mod tests {
         let h = 10u32;
         let mut mask = vec![0u8; (w * h) as usize];
         // Blob A at (1,1) size 2x2
-        for dy in 0..2u32 { for dx in 0..2u32 { mask[((1+dy)*w+(1+dx)) as usize] = 255; } }
+        for dy in 0..2u32 {
+            for dx in 0..2u32 {
+                mask[((1 + dy) * w + (1 + dx)) as usize] = 255;
+            }
+        }
         // Blob B at (15,1) size 2x2
-        for dy in 0..2u32 { for dx in 0..2u32 { mask[((1+dy)*w+(15+dx)) as usize] = 255; } }
+        for dy in 0..2u32 {
+            for dx in 0..2u32 {
+                mask[((1 + dy) * w + (15 + dx)) as usize] = 255;
+            }
+        }
         let rects = find_contour_rects(&mask, w, h);
         assert_eq!(rects.len(), 2);
     }

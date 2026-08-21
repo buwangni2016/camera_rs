@@ -71,22 +71,22 @@ pub fn load_runtime_state(state: &crate::state::AppState) {
         };
     }
 
-    apply!("notify",         *state.notify_cfg.lock());
-    apply!("onedrive",       *state.onedrive_cfg.lock());
-    apply!("gdrive",         *state.gdrive_cfg.lock());
-    apply!("ftp",            *state.ftp_cfg.lock());
-    apply!("schedule",       *state.schedule_rules.lock());
-    apply!("alert_rule",     *state.alert_time_rule.lock());
-    apply!("motion_zones",   *state.motion_zones.write());
+    apply!("notify", *state.notify_cfg.lock());
+    apply!("onedrive", *state.onedrive_cfg.lock());
+    apply!("gdrive", *state.gdrive_cfg.lock());
+    apply!("ftp", *state.ftp_cfg.lock());
+    apply!("schedule", *state.schedule_rules.lock());
+    apply!("alert_rule", *state.alert_time_rule.lock());
+    apply!("motion_zones", *state.motion_zones.write());
     apply!("image_settings", *state.image_settings.write());
-    apply!("watermark",      *state.watermark_cfg.lock());
-    apply!("privacy_masks",  *state.privacy_masks.lock());
-    apply!("rtsp_cameras",   *state.rtsp_cameras.lock());
-    apply!("security",       *state.security.lock());
-    apply!("record_limits",  *state.record_limits.lock());
-    apply!("timelapse",      *state.timelapse_cfg.lock());
-    apply!("email",          *state.email_cfg.lock());
-    apply!("api_cfg",        *state.api_cfg.lock());
+    apply!("watermark", *state.watermark_cfg.lock());
+    apply!("privacy_masks", *state.privacy_masks.lock());
+    apply!("rtsp_cameras", *state.rtsp_cameras.lock());
+    apply!("security", *state.security.lock());
+    apply!("record_limits", *state.record_limits.lock());
+    apply!("timelapse", *state.timelapse_cfg.lock());
+    apply!("email", *state.email_cfg.lock());
+    apply!("api_cfg", *state.api_cfg.lock());
 
     tracing::info!("运行时状态已从 {} 恢复", RUNTIME_STATE_PATH);
 }
@@ -138,8 +138,15 @@ pub struct StorageConfig {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            server: ServerConfig { host: "0.0.0.0".into(), port: 5000 },
-            camera: CameraConfig { index: 0, width: 1920, height: 1080 },
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 5000,
+            },
+            camera: CameraConfig {
+                index: 0,
+                width: 1920,
+                height: 1080,
+            },
             security: SecurityConfig {
                 password: "admin".into(),
                 max_login_attempts: 5,

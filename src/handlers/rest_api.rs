@@ -1,14 +1,9 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 
-use crate::state::AppState;
 use super::{ts_str, OkResp};
+use crate::state::AppState;
 
 // ============================================================
 //  REST API（X-API-Key 认证）
@@ -16,8 +11,11 @@ use super::{ts_str, OkResp};
 
 fn check_api_key(headers: &axum::http::HeaderMap, state: &AppState) -> bool {
     let cfg = state.api_cfg.lock();
-    if !cfg.enabled { return false; }
-    headers.get("X-API-Key")
+    if !cfg.enabled {
+        return false;
+    }
+    headers
+        .get("X-API-Key")
         .and_then(|v| v.to_str().ok())
         .map(|k| {
             // 常量时间比较，防止时序攻击
@@ -34,12 +32,19 @@ pub async fn api_snapshot(
         return (StatusCode::UNAUTHORIZED, "Invalid API Key").into_response();
     }
     match state.camera.lock().latest_jpeg.clone() {
-        Some(j) => ([(axum::http::header::CONTENT_TYPE, "image/jpeg")], j.as_ref().clone()).into_response(),
-        None    => (StatusCode::SERVICE_UNAVAILABLE, "No frame").into_response(),
+        Some(j) => (
+            [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
+            j.as_ref().clone(),
+        )
+            .into_response(),
+        None => (StatusCode::SERVICE_UNAVAILABLE, "No frame").into_response(),
     }
 }
 
-pub async fn api_stats(State(state): State<AppState>, headers: axum::http::HeaderMap) -> impl IntoResponse {
+pub async fn api_stats(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
     if !check_api_key(&headers, &state) {
         return (StatusCode::UNAUTHORIZED, "Invalid API Key").into_response();
     }
@@ -51,10 +56,14 @@ pub async fn api_stats(State(state): State<AppState>, headers: axum::http::Heade
         "motion_now": cam.motion_now,
         "recording": cam.recording,
         "camera_idx": state.camera_idx.load(std::sync::atomic::Ordering::Relaxed),
-    })).into_response()
+    }))
+    .into_response()
 }
 
-pub async fn api_events(State(state): State<AppState>, headers: axum::http::HeaderMap) -> impl IntoResponse {
+pub async fn api_events(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
     if !check_api_key(&headers, &state) {
         return (StatusCode::UNAUTHORIZED, "Invalid API Key").into_response();
     }
@@ -62,7 +71,9 @@ pub async fn api_events(State(state): State<AppState>, headers: axum::http::Head
 }
 
 #[derive(Deserialize)]
-pub struct TriggerBody { action: String }
+pub struct TriggerBody {
+    action: String,
+}
 
 pub async fn api_trigger(
     State(state): State<AppState>,
@@ -70,7 +81,10 @@ pub async fn api_trigger(
     Json(body): Json<TriggerBody>,
 ) -> Json<OkResp> {
     if !check_api_key(&headers, &state) {
-        return Json(OkResp { ok: false, error: Some("Invalid API Key".into()) });
+        return Json(OkResp {
+            ok: false,
+            error: Some("Invalid API Key".into()),
+        });
     }
     match body.action.as_str() {
         "photo" => {
@@ -79,9 +93,21 @@ pub async fn api_trigger(
                 std::fs::write(format!("{}/photos/{}.jpg", crate::SAVE_DIR, ts_str()), &*j).ok();
             }
         }
-        "motion_on"  => { state.camera.lock().motion_detect = true; }
-        "motion_off" => { state.camera.lock().motion_detect = false; }
-        _ => return Json(OkResp { ok: false, error: Some("unknown action".into()) }),
+        "motion_on" => {
+            state.camera.lock().motion_detect = true;
+        }
+        "motion_off" => {
+            state.camera.lock().motion_detect = false;
+        }
+        _ => {
+            return Json(OkResp {
+                ok: false,
+                error: Some("unknown action".into()),
+            })
+        }
     }
-    Json(OkResp { ok: true, error: None })
+    Json(OkResp {
+        ok: true,
+        error: None,
+    })
 }

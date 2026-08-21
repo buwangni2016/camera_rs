@@ -10,41 +10,48 @@ use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleRule {
-    pub enabled:    bool,
-    pub name:       String,
+    pub enabled: bool,
+    pub name: String,
     /// 星期位掩码：bit0=周一 bit1=周二 ... bit6=周日，0xFF=每天
-    pub weekdays:   u8,
-    pub start_hhmm: u16,  // 格式：900 = 09:00
-    pub end_hhmm:   u16,  // 格式：1800 = 18:00
-    pub action:     ScheduleAction,
+    pub weekdays: u8,
+    pub start_hhmm: u16, // 格式：900 = 09:00
+    pub end_hhmm: u16,   // 格式：1800 = 18:00
+    pub action: ScheduleAction,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ScheduleAction {
-    ArmMotion,      // 开启运动侦测
-    DisarmMotion,   // 关闭运动侦测
-    StartRecord,    // 开始录像
-    StopRecord,     // 停止录像
-    EnableNotify,   // 启用通知
-    DisableNotify,  // 禁用通知（勿扰模式）
-    DailyReport,    // 发送每日统计报告
-    ClearHeatmap,   // 清空运动热力图
-    AutoUpload,     // 立即触发云存储上传
+    ArmMotion,     // 开启运动侦测
+    DisarmMotion,  // 关闭运动侦测
+    StartRecord,   // 开始录像
+    StopRecord,    // 停止录像
+    EnableNotify,  // 启用通知
+    DisableNotify, // 禁用通知（勿扰模式）
+    DailyReport,   // 发送每日统计报告
+    ClearHeatmap,  // 清空运动热力图
+    AutoUpload,    // 立即触发云存储上传
 }
 
 impl ScheduleRule {
     /// 检查当前时间是否在本规则范围内
     pub fn is_active_now(&self) -> bool {
-        if !self.enabled { return false; }
+        if !self.enabled {
+            return false;
+        }
         let now = Local::now();
         let wd_bit = weekday_bit(now.weekday());
-        if self.weekdays != 0xFF && (self.weekdays & wd_bit) == 0 { return false; }
+        if self.weekdays != 0xFF && (self.weekdays & wd_bit) == 0 {
+            return false;
+        }
         let current = now.hour() as u16 * 100 + now.minute() as u16;
         if self.start_hhmm <= self.end_hhmm {
             current >= self.start_hhmm && current < self.end_hhmm
@@ -55,7 +62,9 @@ impl ScheduleRule {
     }
 }
 
-pub fn weekday_bit_pub(wd: chrono::Weekday) -> u8 { weekday_bit(wd) }
+pub fn weekday_bit_pub(wd: chrono::Weekday) -> u8 {
+    weekday_bit(wd)
+}
 
 fn weekday_bit(wd: Weekday) -> u8 {
     match wd {
@@ -88,12 +97,18 @@ async fn apply_schedules_async(
 
     for (i, rule) in rules.iter().enumerate() {
         let active = rule.is_active_now();
-        if active { cur_active.insert(i); }
+        if active {
+            cur_active.insert(i);
+        }
 
         match rule.action {
             // 以下为"一次性触发"动作：只在刚进入激活窗口时执行一次
-            ScheduleAction::DailyReport | ScheduleAction::ClearHeatmap | ScheduleAction::AutoUpload => {
-                if !active || prev_active.contains(&i) { continue; }
+            ScheduleAction::DailyReport
+            | ScheduleAction::ClearHeatmap
+            | ScheduleAction::AutoUpload => {
+                if !active || prev_active.contains(&i) {
+                    continue;
+                }
                 match rule.action {
                     ScheduleAction::DailyReport => {
                         let s = state.clone();
@@ -109,9 +124,20 @@ async fn apply_schedules_async(
                             let od = state.onedrive_cfg.lock().clone();
                             let gd = state.gdrive_cfg.lock().clone();
                             let ft = state.ftp_cfg.lock().clone();
-                            let fname = format!("auto/{}.jpg", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+                            let fname = format!(
+                                "auto/{}.jpg",
+                                chrono::Local::now().format("%Y%m%d_%H%M%S")
+                            );
                             tokio::spawn(async move {
-                                crate::upload::upload_all(&od, &gd, &ft, &fname, &j, crate::upload::UploadKind::Photo).await;
+                                crate::upload::upload_all(
+                                    &od,
+                                    &gd,
+                                    &ft,
+                                    &fname,
+                                    &j,
+                                    crate::upload::UploadKind::Photo,
+                                )
+                                .await;
                             });
                         }
                     }
@@ -120,7 +146,9 @@ async fn apply_schedules_async(
             }
             // StartRecord：进入窗口时开始，幂等
             ScheduleAction::StartRecord => {
-                if !active { continue; }
+                if !active {
+                    continue;
+                }
                 let mut cam = state.camera.lock();
                 if !cam.recording {
                     cam.recording = true;
@@ -132,18 +160,25 @@ async fn apply_schedules_async(
             // StopRecord：离开窗口时停止并保存帧
             ScheduleAction::StopRecord => {
                 // 当前不在窗口 且 上一轮在窗口 → 刚离开，保存录像
-                if active || !prev_active.contains(&i) { continue; }
+                if active || !prev_active.contains(&i) {
+                    continue;
+                }
                 let frames = {
                     let mut cam = state.camera.lock();
                     if cam.recording {
                         cam.recording = false;
                         Some(std::mem::take(&mut cam.record_frames))
-                    } else { None }
+                    } else {
+                        None
+                    }
                 };
                 if let Some(frames) = frames {
                     if !frames.is_empty() {
-                        let path = format!("{}/videos/{}.avi", crate::SAVE_DIR,
-                            chrono::Local::now().format("%Y%m%d_%H%M%S"));
+                        let path = format!(
+                            "{}/videos/{}.avi",
+                            crate::SAVE_DIR,
+                            chrono::Local::now().format("%Y%m%d_%H%M%S")
+                        );
                         tokio::task::spawn_blocking(move || {
                             crate::camera::save_mjpeg_avi(&frames, crate::RECORD_FPS, &path).ok();
                         });
@@ -153,7 +188,9 @@ async fn apply_schedules_async(
             }
             // 其余状态类动作：幂等，每轮都可执行
             _ => {
-                if !active { continue; }
+                if !active {
+                    continue;
+                }
                 apply_sync_rule(state, rule);
             }
         }

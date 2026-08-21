@@ -6,8 +6,15 @@
 use crate::state::AppState;
 
 /// 当检测到运动轮廓时，将运动区域（像素坐标）叠加到热力图格子
-pub fn record_motion(state: &AppState, contours: &[(u32, u32, u32, u32)], frame_w: u32, frame_h: u32) {
-    if frame_w == 0 || frame_h == 0 { return; }
+pub fn record_motion(
+    state: &AppState,
+    contours: &[(u32, u32, u32, u32)],
+    frame_w: u32,
+    frame_h: u32,
+) {
+    if frame_w == 0 || frame_h == 0 {
+        return;
+    }
     let (cols, rows) = state.heatmap_size;
     let mut hm = state.heatmap.lock();
     for &(x, y, w, h) in contours {
@@ -50,7 +57,7 @@ pub fn render_heatmap_png(state: &AppState) -> Vec<u8> {
                     let px = gx * cell + dx;
                     let py = gy * cell + dy;
                     let pi = ((py * img_w + px) * 3) as usize;
-                    rgb[pi]     = r;
+                    rgb[pi] = r;
                     rgb[pi + 1] = g;
                     rgb[pi + 2] = b;
                 }
@@ -84,7 +91,9 @@ pub fn heatmap_json(state: &AppState) -> serde_json::Value {
 /// 清空热力图
 pub fn clear_heatmap(state: &AppState) {
     let mut hm = state.heatmap.lock();
-    for v in hm.iter_mut() { *v = 0; }
+    for v in hm.iter_mut() {
+        *v = 0;
+    }
 }
 
 // ============================================================

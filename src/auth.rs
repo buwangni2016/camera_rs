@@ -70,7 +70,10 @@ mod tests {
     #[test]
     fn argon2_hash_is_phc_format() {
         let hash = hash_password("test");
-        assert!(hash.starts_with("$argon2"), "expected PHC format, got: {hash}");
+        assert!(
+            hash.starts_with("$argon2"),
+            "expected PHC format, got: {hash}"
+        );
     }
 
     #[test]
