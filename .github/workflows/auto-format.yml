@@ -1,0 +1,25 @@
+name: Auto Format
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format all
+        run: cargo fmt --all
+
+      - name: Commit if changed
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "style: cargo fmt --all (auto)"
