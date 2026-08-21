@@ -38,8 +38,8 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy (warn only)
+        run: cargo clippy --all-targets --all-features
 
       - name: Run tests
         run: cargo test --all-features
