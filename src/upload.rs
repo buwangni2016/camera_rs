@@ -244,7 +244,10 @@ pub async fn upload_ftp(cfg: &FtpConfig, filename: &str, data: &[u8]) {
             let mut ftp = FtpStream::connect(&addr)?;
             ftp.login(&user, &pass)?;
             if !dir.is_empty() {
-                ftp.cwd(&dir).or_else(|_| { ftp.mkdir(&dir)?; ftp.cwd(&dir) })?;
+                ftp.cwd(&dir).or_else(|_| {
+                    ftp.mkdir(&dir)?;
+                    ftp.cwd(&dir)
+                })?;
             }
             let cursor = std::io::Cursor::new(data_owned);
             ftp.put_file(&fname, &mut std::io::BufReader::new(cursor))?;
