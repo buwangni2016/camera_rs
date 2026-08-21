@@ -1,3 +1,12 @@
 /target
 captures/
 faces/
+
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+rf_out.txt
+rf_out2.txt
+rustfmt.tar.gz
+rustfmt-*/
