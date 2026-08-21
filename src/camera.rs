@@ -478,6 +478,25 @@ fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32, ca
 
         if cam.recording {
             cam.record_frames.push(jpeg.clone());
+            // 录像保护：达到时长/大小上限后自动分段保存，防止内存无限增长
+            let limits = state.record_limits.lock().clone();
+            let elapsed = cam.record_start.map(|t| now_secs().saturating_sub(t)).unwrap_or(0);
+            let est_bytes: u64 = cam.record_frames.iter().map(|f| f.len() as u64).sum();
+            let dur_hit = limits.auto_split && limits.max_duration_secs > 0 && elapsed >= limits.max_duration_secs;
+            let size_hit = limits.auto_split && limits.max_size_mb > 0 && est_bytes >= limits.max_size_mb * 1024 * 1024;
+            if dur_hit || size_hit {
+                let frames = std::mem::take(&mut cam.record_frames);
+                cam.record_start = Some(now_secs());
+                let path = format!("{}/videos/{}.avi", crate::SAVE_DIR, ts_str());
+                tracing::info!(
+                    "录像自动分段：{} 帧 / {} MB（原因：{}）",
+                    frames.len(), est_bytes / 1024 / 1024,
+                    if dur_hit { "时长上限" } else { "大小上限" }
+                );
+                tokio::task::spawn_blocking(move || {
+                    crate::camera::save_mjpeg_avi(&frames, crate::RECORD_FPS, &path).ok();
+                });
+            }
         }
     }
 

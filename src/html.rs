@@ -3,16 +3,22 @@ pub const LOGIN_HTML: &str = r#"<!DOCTYPE html><html lang="zh"><head>
 <title>监控系统 - 登录</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#1a1a2e;display:flex;align-items:center;justify-content:center;height:100vh;font-family:'Segoe UI',sans-serif}
-.box{background:#16213e;border:1px solid #0f3460;border-radius:14px;padding:40px 32px;width:340px;text-align:center}
-h2{color:#e94560;margin-bottom:24px;font-size:20px}
-input{width:100%;padding:10px 14px;border-radius:8px;border:1px solid #0f3460;background:#1a1a2e;color:#eee;font-size:15px;margin-bottom:14px;outline:none}
-input:focus{border-color:#e94560}
-button{width:100%;padding:11px;background:#e94560;color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}
-.err{color:#e94560;font-size:13px;margin-bottom:12px}
+body{background:linear-gradient(135deg,#0f0c29 0%,#1a1a2e 50%,#24243e 100%);display:flex;align-items:center;justify-content:center;height:100vh;font-family:'Segoe UI',system-ui,sans-serif}
+.box{background:rgba(22,33,62,.75);backdrop-filter:blur(12px);border:1px solid rgba(15,52,96,.8);border-radius:18px;padding:44px 36px;width:360px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5),0 0 40px rgba(233,69,96,.06)}
+.logo{width:56px;height:56px;margin:0 auto 18px;border-radius:16px;background:linear-gradient(135deg,#e94560,#c2314d);display:flex;align-items:center;justify-content:center;font-size:28px;box-shadow:0 8px 24px rgba(233,69,96,.35)}
+h2{color:#eee;margin-bottom:6px;font-size:20px;font-weight:600}
+.sub{color:#6a7ba2;font-size:12px;margin-bottom:26px}
+input{width:100%;padding:12px 16px;border-radius:10px;border:1px solid #0f3460;background:rgba(26,26,46,.8);color:#eee;font-size:15px;margin-bottom:14px;outline:none;transition:border-color .25s,box-shadow .25s}
+input:focus{border-color:#e94560;box-shadow:0 0 0 3px rgba(233,69,96,.15)}
+button{width:100%;padding:12px;background:linear-gradient(135deg,#e94560,#d63850);color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;transition:transform .15s,box-shadow .25s}
+button:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(233,69,96,.4)}
+button:active{transform:translateY(0)}
+.err{color:#ff6b81;font-size:13px;margin-bottom:12px}
 </style></head><body>
 <div class="box">
+  <div class="logo">📷</div>
   <h2>摄像头监控系统</h2>
+  <div class="sub">Rust · 安全访问</div>
   <div id="err-msg" class="err" style="display:none"></div>
   <form method="post" action="/login">
     <input type="password" name="password" placeholder="输入访问密码" autofocus>
@@ -295,13 +301,38 @@ select.form-sel{width:100%;padding:8px;border-radius:6px;border:1px solid #0f346
       <p id="notify-status" class="status-ok" style="display:none"></p>
     </div>
 
+    <!-- 安全设置 -->
+    <div class="card">
+      <div class="section-title">🔒 安全设置</div>
+      <div class="form-row"><label>新密码（留空 = 不修改）</label><input type="password" id="sec-password" class="form-input" placeholder="不回传旧密码，更安全"></div>
+      <div class="form-row"><label>IP 白名单（逗号分隔，支持 192.168.1.* 通配，留空 = 不限制）</label><input type="text" id="sec-whitelist" class="form-input" placeholder="192.168.31.*,127.0.0.1"></div>
+      <div class="range-row"><span>最大登录失败次数</span></div>
+      <input type="number" id="sec-max-attempts" class="form-input" min="3" max="20" value="5">
+      <div class="range-row" style="margin-top:6px"><span>锁定时长（秒）</span></div>
+      <input type="number" id="sec-lockout" class="form-input" min="60" max="86400" value="900">
+      <button class="btn btn-green" style="margin-top:10px" onclick="saveSecurity()">保存安全设置</button>
+      <p id="sec-status" class="status-ok" style="display:none"></p>
+    </div>
+
+    <!-- 录像限制 -->
+    <div class="card">
+      <div class="section-title">⏺️ 录像限制（防内存溢出，自动分段保存）</div>
+      <div class="toggle-row"><span class="toggle-label">到达上限后自动分段</span><label class="switch"><input type="checkbox" id="rl-split" checked><span class="slider"></span></label></div>
+      <div class="range-row"><span>最长录像（分钟，0=不限）</span></div>
+      <input type="number" id="rl-duration" class="form-input" min="0" max="720" value="30">
+      <div class="range-row" style="margin-top:6px"><span>最大体积（MB，0=不限）</span></div>
+      <input type="number" id="rl-size" class="form-input" min="0" max="10240" value="500">
+      <button class="btn btn-green" style="margin-top:10px" onclick="saveRecordLimits()">保存录像限制</button>
+      <p id="rl-status" class="status-ok" style="display:none"></p>
+    </div>
+
     <!-- 系统信息 -->
     <div class="card">
       <div class="section-title">ℹ️ 系统信息</div>
       <div class="stat-row"><span>引擎</span><span class="stat-val">Rust + nokhwa</span></div>
       <div class="stat-row"><span>通知渠道</span><span class="stat-val">7 种</span></div>
       <div class="stat-row"><span>云存储</span><span class="stat-val">OneDrive</span></div>
-      <div class="stat-row"><span>版本</span><span class="stat-val">3.0.0</span></div>
+      <div class="stat-row"><span>版本</span><span class="stat-val">3.1.0</span></div>
     </div>
 
   </div>
@@ -417,6 +448,8 @@ function loadSettings(){
     setChk('od-photos',c.upload_photos??true);setChk('od-videos',c.upload_videos);
     setChk('od-share',c.create_share_links??true);setVal('od-share-url',c.share_folder_url);
   });
+  loadSecurity();
+  loadRecordLimits();
 }
 function setVal(id,v){const el=document.getElementById(id);if(el&&v!=null)el.value=v;}
 function setChk(id,v){const el=document.getElementById(id);if(el&&v!=null)el.checked=!!v;}
@@ -484,6 +517,56 @@ function testEmail(){
   fetch('/test_email').then(r=>r.json()).then(d=>{
     if(d.ok)toast('测试邮件已发送');else toast('发送失败: '+d.error,'#e94560');
   });
+}
+
+// ===== 安全设置 =====
+function loadSecurity(){
+  fetch('/security_config').then(r=>r.json()).then(c=>{
+    setVal('sec-whitelist',(c.ip_whitelist||[]).join(','));
+    setVal('sec-max-attempts',c.max_login_attempts??5);
+    setVal('sec-lockout',c.lockout_secs??900);
+    const pw=document.getElementById('sec-password');
+    if(pw)pw.placeholder=c.has_password?'已设置密码，留空不修改':'未设置密码';
+  });
+}
+function saveSecurity(){
+  const body={
+    ip_whitelist:getVal('sec-whitelist').split(',').map(s=>s.trim()).filter(Boolean),
+    https_enabled:false,cert_path:'cert.pem',key_path:'key.pem',
+    password:getVal('sec-password'),   // 空字符串 = 不修改
+    max_login_attempts:parseInt(getVal('sec-max-attempts')||'5'),
+    lockout_secs:parseInt(getVal('sec-lockout')||'900')
+  };
+  fetch('/security_config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(r=>r.json()).then(d=>{
+      const el=document.getElementById('sec-status');
+      el.textContent=d.ok?'✅ 已保存，下次登录生效':'❌ 保存失败';
+      el.className=d.ok?'status-ok':'status-err';el.style.display='block';
+      if(d.ok){document.getElementById('sec-password').value='';toast('安全设置已保存');loadSecurity();}
+    });
+}
+
+// ===== 录像限制 =====
+function loadRecordLimits(){
+  fetch('/record_limits').then(r=>r.json()).then(c=>{
+    setChk('rl-split',c.auto_split??true);
+    setVal('rl-duration',Math.round((c.max_duration_secs||0)/60));
+    setVal('rl-size',c.max_size_mb||0);
+  });
+}
+function saveRecordLimits(){
+  const body={
+    max_duration_secs:parseInt(getVal('rl-duration')||'0')*60,
+    max_size_mb:parseInt(getVal('rl-size')||'0'),
+    auto_split:getChk('rl-split')
+  };
+  fetch('/record_limits',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(r=>r.json()).then(d=>{
+      const el=document.getElementById('rl-status');
+      el.textContent=d.ok?'✅ 已保存':'❌ 保存失败';
+      el.className=d.ok?'status-ok':'status-err';el.style.display='block';
+      if(d.ok)toast('录像限制已保存');
+    });
 }
 
 loadCameras();

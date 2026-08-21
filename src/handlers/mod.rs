@@ -66,3 +66,29 @@ pub(crate) fn now_secs() -> u64 {
 pub(crate) fn ts_str() -> String {
     chrono::Local::now().format("%Y%m%d_%H%M%S").to_string()
 }
+
+/// 安全响应版 SecurityConfig：绝不回传明文密码
+#[derive(Serialize)]
+pub struct SecurityConfigSafe {
+    pub ip_whitelist:       Vec<String>,
+    pub https_enabled:      bool,
+    pub cert_path:          String,
+    pub key_path:           String,
+    pub has_password:       bool,   // 只暴露"是否设置了密码"
+    pub max_login_attempts: u32,
+    pub lockout_secs:       u64,
+}
+
+impl From<&crate::state::SecurityConfig> for SecurityConfigSafe {
+    fn from(c: &crate::state::SecurityConfig) -> Self {
+        Self {
+            ip_whitelist: c.ip_whitelist.clone(),
+            https_enabled: c.https_enabled,
+            cert_path: c.cert_path.clone(),
+            key_path: c.key_path.clone(),
+            has_password: !c.password.is_empty(),
+            max_login_attempts: c.max_login_attempts,
+            lockout_secs: c.lockout_secs,
+        }
+    }
+}

@@ -368,14 +368,21 @@ pub async fn save_rtsp_cameras(State(s): State<AppState>, jar: PrivateCookieJar,
 //  安全 / IP 白名单配置
 // ============================================================
 
-pub async fn get_security_config(State(s): State<AppState>, jar: PrivateCookieJar) -> Json<crate::state::SecurityConfig> {
-    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(Default::default()); }
-    Json(s.security.lock().clone())
+pub async fn get_security_config(State(s): State<AppState>, jar: PrivateCookieJar) -> Json<super::SecurityConfigSafe> {
+    if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(super::SecurityConfigSafe::from(&crate::state::SecurityConfig::default())); }
+    Json(super::SecurityConfigSafe::from(&*s.security.lock()))
 }
 
 pub async fn save_security_config(State(s): State<AppState>, jar: PrivateCookieJar, Json(c): Json<crate::state::SecurityConfig>) -> Json<OkResp> {
     if !is_authed(&jar) && !crate::PASSWORD.is_empty() { return Json(OkResp::default()); }
-    *s.security.lock() = c;
+    let mut sec = s.security.lock();
+    // 密码为空 = 不修改（前端不回传旧密码）
+    let new_pw = c.password.trim().to_string();
+    let password = if new_pw.is_empty() { sec.password.clone() } else { new_pw };
+    *sec = c;
+    sec.password = password;
+    drop(sec);
+    crate::config::save_runtime_state(&s);
     Json(OkResp { ok: true, error: None })
 }
 
@@ -414,7 +421,7 @@ pub async fn export_config(State(state): State<AppState>, jar: PrivateCookieJar)
         "watermark":      *state.watermark_cfg.lock(),
         "privacy_masks":  *state.privacy_masks.lock(),
         "rtsp_cameras":   *state.rtsp_cameras.lock(),
-        "security":       *state.security.lock(),
+        "security":      super::SecurityConfigSafe::from(&*state.security.lock()),
         "record_limits":  *state.record_limits.lock(),
     });
     let json = serde_json::to_string_pretty(&export).unwrap_or_default();
@@ -439,7 +446,13 @@ pub async fn import_config(
     if let Some(v) = data.get("watermark")     { if let Ok(c) = serde_json::from_value(v.clone()) { *state.watermark_cfg.lock() = c; } }
     if let Some(v) = data.get("privacy_masks") { if let Ok(m) = serde_json::from_value(v.clone()) { *state.privacy_masks.lock() = m; } }
     if let Some(v) = data.get("rtsp_cameras")  { if let Ok(c) = serde_json::from_value(v.clone()) { *state.rtsp_cameras.lock() = c; } }
-    if let Some(v) = data.get("security")      { if let Ok(c) = serde_json::from_value(v.clone()) { *state.security.lock() = c; } }
+    if let Some(v) = data.get("security")      {
+        if let Ok(mut c) = serde_json::from_value::<crate::state::SecurityConfig>(v.clone()) {
+            // 新版导出不含明文密码（空字段），导入时保留现有密码
+            if c.password.trim().is_empty() { c.password = state.security.lock().password.clone(); }
+            *state.security.lock() = c;
+        }
+    }
     if let Some(v) = data.get("record_limits") { if let Ok(c) = serde_json::from_value(v.clone()) { *state.record_limits.lock() = c; } }
     Json(OkResp { ok: true, error: None })
 }
