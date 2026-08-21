@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::collections::HashMap;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::broadcast;
 use axum_extra::extract::cookie::Key;
 use axum::extract::FromRef;
@@ -59,7 +59,7 @@ impl Default for RecordLimits {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserAccount {
     pub username:      String,
-    pub password_hash: String,   // SHA-256
+    pub password_hash: String,   // Argon2id PHC string（旧条目可能为 SHA-256 hex，登录时自动升级）
     pub role:          UserRole,
     pub enabled:       bool,
 }
@@ -271,9 +271,9 @@ pub struct AppState {
     /// 主广播（向后兼容 /video 无参数）
     pub frame_tx:           broadcast::Sender<Arc<Vec<u8>>>,
 
-    // 图像与检测
-    pub image_settings:     Arc<Mutex<ImageSettings>>,
-    pub motion_zones:       Arc<Mutex<Vec<MotionZone>>>,
+    // 图像与检测（RwLock：捕获循环高频只读，HTTP handler 低频写入）
+    pub image_settings:     Arc<RwLock<ImageSettings>>,
+    pub motion_zones:       Arc<RwLock<Vec<MotionZone>>>,
     pub record_limits:      Arc<Mutex<RecordLimits>>,
 
     // 通知
@@ -330,7 +330,7 @@ impl AppState {
         let mut users = Vec::new();
         users.push(UserAccount {
             username: "admin".into(),
-            password_hash: crate::auth::hash_password("admin"),
+            password_hash: crate::auth::hash_password("admin"),  // Argon2id
             role: UserRole::Admin,
             enabled: true,
         });
@@ -341,8 +341,8 @@ impl AppState {
             available_cameras:  Arc::new(Mutex::new(Vec::new())),
             frame_txs:          Arc::new(Mutex::new(frame_txs)),
             frame_tx,
-            image_settings:     Arc::new(Mutex::new(ImageSettings::default())),
-            motion_zones:       Arc::new(Mutex::new(Vec::new())),
+            image_settings:     Arc::new(RwLock::new(ImageSettings::default())),
+            motion_zones:       Arc::new(RwLock::new(Vec::new())),
             record_limits:      Arc::new(Mutex::new(RecordLimits::default())),
             email_cfg:          Arc::new(Mutex::new(EmailConfig::default_smtp())),
             notify_cfg:         Arc::new(Mutex::new(NotifyConfig::default())),

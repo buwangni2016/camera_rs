@@ -26,9 +26,16 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
-# Password hashing
+# Password hashing — Argon2id (main) + SHA-256 (API key only)
+argon2 = "0.5"
 sha2 = "0.10"
 hex = "0.4"
+
+# Constant-time comparison (防时序攻击)
+subtle = "2"
+
+# Task lifecycle management
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Email alerts
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "rustls-tls", "builder"] }
@@ -56,6 +63,9 @@ suppaftp = { version = "6", default-features = false, features = ["async-rustls"
 
 # QR 码生成
 qrcode = "0.14"
+
+# Data-parallel CPU processing
+rayon = "1"
 
 # Misc
 uuid = { version = "1", features = ["v4"] }

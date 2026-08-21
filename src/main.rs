@@ -17,6 +17,8 @@ mod upload;
 use std::net::SocketAddr;
 use axum::{Router, routing::{get, post}, middleware, extract::ConnectInfo};
 use tower_http::cors::CorsLayer;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use state::AppState;
 use handlers::*;
 
@@ -53,7 +55,7 @@ async fn ip_whitelist_middleware(
 
 fn ip_matches(ip: &str, pattern: &str) -> bool {
     // 只有以 '*' 结尾的模式才使用前缀匹配（如 "192.168.1.*"）
-    // 其余情况必须精确匹配，防止 192.168.1.1 匹配 192.168.1.10
+    // 其余情况必须精确匹配，防止 192.168.1.1 意外匹配 192.168.1.10
     if pattern.ends_with('*') {
         ip.starts_with(pattern.trim_end_matches('*'))
     } else {
@@ -61,9 +63,36 @@ fn ip_matches(ip: &str, pattern: &str) -> bool {
     }
 }
 
+/// 带监督的后台任务：panic 时记录日志并通过 CancellationToken 通知系统。
+macro_rules! spawn_supervised {
+    ($tracker:expr, $token:expr, $name:expr, $fut:expr) => {{
+        let token = $token.clone();
+        let name = $name;
+        $tracker.spawn(async move {
+            let result = tokio::spawn($fut).await;
+            match result {
+                Ok(_) => tracing::info!("后台任务 '{}' 正常退出", name),
+                Err(e) if e.is_panic() => {
+                    tracing::error!("后台任务 '{}' 发生 panic: {:?}", name, e);
+                    token.cancel();   // 通知系统进入关闭流程
+                }
+                Err(e) => tracing::warn!("后台任务 '{}' 被取消: {:?}", name, e),
+            }
+        });
+    }};
+}
+
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_target(false).init();
+    // 结构化日志：支持 RUST_LOG 环境变量过滤
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_target(true)
+        .with_thread_ids(false)
+        .init();
 
     let cfg = config::Config::load();
 
@@ -73,6 +102,9 @@ async fn main() {
     std::fs::create_dir_all(FACE_DIR).ok();
 
     let state = AppState::new(cfg.camera.index, &cfg.security);
+
+    // 从磁盘恢复上次的运行时配置（通知渠道、云存储、排程等）
+    config::load_runtime_state(&state);
 
     // 枚举摄像头
     {
@@ -85,10 +117,16 @@ async fn main() {
         *state.available_cameras.lock() = cameras;
     }
 
-    // 启动主摄像头捕获（热切换模式）
+    // 任务生命周期管理
+    let token = CancellationToken::new();
+    let tracker = TaskTracker::new();
+
+    // 启动主摄像头捕获
     {
         let s = state.clone();
-        tokio::spawn(async move { camera::capture_loop(s).await });
+        spawn_supervised!(tracker, token, "capture_loop", async move {
+            camera::capture_loop(s).await
+        });
     }
 
     // 为所有非主摄像头各启动一个独立预览流（多屏分屏用）
@@ -107,7 +145,17 @@ async fn main() {
     // 启动定时任务
     {
         let s = state.clone();
-        tokio::spawn(async move { schedule::schedule_loop(s).await });
+        spawn_supervised!(tracker, token, "schedule_loop", async move {
+            schedule::schedule_loop(s).await
+        });
+    }
+
+    // 运行时状态自动持久化（每 60 秒）
+    {
+        let s = state.clone();
+        spawn_supervised!(tracker, token, "auto_persist", async move {
+            config::auto_persist_loop(s).await
+        });
     }
 
     // 事件日志：记录启动
@@ -205,9 +253,32 @@ async fn main() {
 
     let addr: SocketAddr = format!("{}:{}", cfg.server.host, cfg.server.port).parse().unwrap();
     tracing::info!("启动中... http://localhost:{}", cfg.server.port);
-    tracing::info!("密码: {} | 修改: config.toml", cfg.security.password);
+    tracing::info!("默认密码: {} | 修改: config.toml", cfg.security.password);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+
+    // 优雅关闭：监听 Ctrl-C 或任务 panic（CancellationToken 被取消）
+    let shutdown_state = state.clone();
+    let shutdown = async move {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("收到 Ctrl-C，开始优雅关闭...");
+            }
+            _ = token.cancelled() => {
+                tracing::error!("后台任务 panic，触发系统关闭");
+            }
+        }
+        // 关闭前最后一次持久化运行时状态
+        config::save_runtime_state(&shutdown_state);
+        tracing::info!("运行时状态已在关闭前持久化");
+        tracker.close();
+        tracker.wait().await;
+    };
+
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .await.unwrap();
+        .with_graceful_shutdown(shutdown)
+        .await
+        .unwrap();
+
+    tracing::info!("服务器已关闭");
 }

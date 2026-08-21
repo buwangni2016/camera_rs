@@ -320,7 +320,7 @@ fn run_nokhwa_loop_idx(state: AppState, fixed_idx: usize) {
             // 降分辨率上限 1280x720，减少编码耗时和流量
             scale_down_rgb(&mut rgb, &mut w, &mut h, 1280, 720);
 
-            let img_settings = state.image_settings.lock().clone();
+            let img_settings = state.image_settings.read().clone();
             apply_image_settings(&mut rgb, &mut w, &mut h, &img_settings);
 
             if is_primary {
@@ -378,7 +378,7 @@ fn process_and_broadcast(state: &AppState, rgb: &mut Vec<u8>, w: u32, h: u32, ca
     let prev_gray = state.camera.lock().prev_gray.clone();
 
     let (contours, detected, new_gray) = if should_detect {
-        let zones = state.motion_zones.lock().clone();
+        let zones = state.motion_zones.read().clone();
         let mut rgb_for_motion = rgb.clone();
         if !zones.is_empty() {
             apply_motion_zones(&mut rgb_for_motion, w, h, &zones);
