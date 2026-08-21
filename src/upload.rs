@@ -252,10 +252,12 @@ pub async fn upload_ftp(cfg: &FtpConfig, filename: &str, data: &[u8]) {
             Ok(())
         })();
         match result {
-            Ok(_)  => tracing::info!("FTP 上传成功: {}", fname),
+            Ok(_) => tracing::info!("FTP 上传成功: {}", fname),
             Err(e) => tracing::warn!("FTP 上传失败: {}", e),
         }
-    }).await.ok();
+    })
+    .await
+    .ok();
 }
 
 use base64::Engine;
