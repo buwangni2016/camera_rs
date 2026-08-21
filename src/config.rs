@@ -65,7 +65,7 @@ pub fn load_runtime_state(state: &crate::state::AppState) {
         ($key:expr, $field:expr) => {
             if let Some(v) = data.get($key) {
                 if let Ok(c) = serde_json::from_value(v.clone()) {
-                    *$field = c;
+                    $field = c;
                 }
             }
         };

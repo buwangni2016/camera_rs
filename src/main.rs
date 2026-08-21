@@ -249,7 +249,7 @@ async fn main() {
         .route("/config/import",  post(import_config))
         .layer(middleware::from_fn_with_state(state.clone(), ip_whitelist_middleware))
         .layer(CorsLayer::permissive())
-        .with_state(state);
+        .with_state(state.clone());
 
     let addr: SocketAddr = format!("{}:{}", cfg.server.host, cfg.server.port).parse().unwrap();
     tracing::info!("启动中... http://localhost:{}", cfg.server.port);
